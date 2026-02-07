@@ -73,6 +73,7 @@ drop add ./dist/ --name my-feature --desc "Feature prototype"
 
 - `--port <N>` — server port (default: 8080)
 - `--host <ip>` — override detected IP
+- `--no-tunnel` — disable automatic tunnel when behind NAT
 
 ## Examples
 
@@ -131,6 +132,30 @@ drop cleanup
 - `[running]` — app process is active
 - `[stopped]` — registered but not running
 - `[crashed]` — process exited unexpectedly
+
+## Tunnel (NAT Support)
+
+When running behind NAT, drop automatically creates a public URL via cloudflared tunnel.
+
+```bash
+# Behind NAT - tunnel starts automatically
+$ drop start
+Detected NAT, starting tunnel...
+Server started: https://random-words.trycloudflare.com
+  (tunneled via cloudflared)
+
+# Apps also get tunnels
+$ drop start myapp
+Detected NAT, starting tunnel...
+App started: https://other-random.trycloudflare.com
+  (tunneled via cloudflared)
+
+# Disable tunnel if needed
+$ drop start --no-tunnel
+Server started: http://192.168.1.50:8080 (local)
+```
+
+Tunnel auto-restarts if cloudflared crashes. URLs change on each restart (quick tunnels don't persist).
 
 ## Publishing Directories (Manifest Required)
 
