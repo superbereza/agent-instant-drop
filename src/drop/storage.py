@@ -19,6 +19,8 @@ class PageInfo(TypedDict):
     run_cmd: str  # Command to run (for apps)
     port: int  # App port (for apps)
     pid: int  # Running process PID (for apps, 0 if not running)
+    tunnel_url: str  # Tunnel URL (empty if no tunnel)
+    tunnel_pid: int  # Tunnel process PID (0 if no tunnel)
 
 
 DROP_DIR = Path.home() / ".drop"
@@ -72,6 +74,8 @@ def add_page(
         "run_cmd": run_cmd,
         "port": port,
         "pid": 0,
+        "tunnel_url": "",
+        "tunnel_pid": 0,
     }
     save_pages(pages)
 
@@ -131,6 +135,18 @@ def update_page_pid(page_id: str, pid: int) -> bool:
     if not full_id:
         return False
     pages[full_id]["pid"] = pid
+    save_pages(pages)
+    return True
+
+
+def update_page_tunnel(page_id: str, tunnel_url: str, tunnel_pid: int) -> bool:
+    """Update tunnel info for a page. Returns True if found."""
+    pages = load_pages()
+    full_id = get_full_page_id(page_id)
+    if not full_id:
+        return False
+    pages[full_id]["tunnel_url"] = tunnel_url
+    pages[full_id]["tunnel_pid"] = tunnel_pid
     save_pages(pages)
     return True
 
