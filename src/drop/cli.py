@@ -90,7 +90,11 @@ def cmd_start_app(args: argparse.Namespace) -> int:
     status = storage.get_app_status(args.name)
     if status == "running":
         host = storage.load_host() or detect_ip()
-        print(f"App already running: http://{host}:{page['port']}/")
+        tunnel_url = page.get("tunnel_url")
+        if tunnel_url:
+            print(f"App already running: {tunnel_url}")
+        else:
+            print(f"App already running: http://{host}:{page['port']}/")
         return 0
 
     # Start the app
@@ -114,13 +118,37 @@ def cmd_start_app(args: argparse.Namespace) -> int:
     time.sleep(1)
     try:
         os.kill(proc.pid, 0)
-        host = storage.load_host() or detect_ip()
-        print(f"App started: http://{host}:{page['port']}/")
-        return 0
     except OSError:
         storage.update_page_pid(full_id, 0)
         print("Error: App failed to start", file=sys.stderr)
         return 1
+
+    host = storage.load_host() or detect_ip()
+    app_port = page["port"]
+
+    # Check for NAT and start tunnel
+    no_tunnel = getattr(args, 'no_tunnel', False)
+    if not no_tunnel and is_behind_nat():
+        cloudflared = find_cloudflared()
+        if cloudflared:
+            print("Detected NAT, starting tunnel...")
+            result = tunnel.start_tunnel(app_port)
+            if result:
+                tunnel_url, tunnel_pid = result
+                storage.update_page_tunnel(full_id, tunnel_url, tunnel_pid)
+                print(f"App started: {tunnel_url}")
+                print("  (tunneled via cloudflared)")
+                return 0
+            else:
+                print(f"App started: http://{host}:{app_port}/")
+                print("  Warning: Failed to start tunnel")
+        else:
+            print(f"App started: http://{host}:{app_port}/")
+            print("  Note: Behind NAT but cloudflared not found. Run ./install.sh")
+    else:
+        print(f"App started: http://{host}:{app_port}/")
+
+    return 0
 
 
 def cmd_stop_app(args: argparse.Namespace) -> int:
