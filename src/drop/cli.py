@@ -162,6 +162,14 @@ def cmd_stop_app(args: argparse.Namespace) -> int:
         print(f"Error: '{args.name}' is not an app (use 'drop stop' for server)", file=sys.stderr)
         return 1
 
+    full_id = storage.get_full_page_id(args.name)
+
+    # Stop tunnel if running
+    tunnel_pid = page.get("tunnel_pid", 0)
+    if tunnel_pid > 0:
+        tunnel.stop_tunnel(tunnel_pid)
+        storage.update_page_tunnel(full_id, "", 0)
+
     status = storage.get_app_status(args.name)
     if status != "running":
         print("App not running")
@@ -178,7 +186,6 @@ def cmd_stop_app(args: argparse.Namespace) -> int:
         except OSError:
             print("App was not running")
 
-    full_id = storage.get_full_page_id(args.name)
     storage.update_page_pid(full_id, 0)
     return 0
 
