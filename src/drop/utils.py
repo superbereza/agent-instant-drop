@@ -175,3 +175,13 @@ def has_systemd() -> bool:
         return True
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
+
+
+def is_behind_nat() -> bool:
+    """Check if we're behind NAT (external IP != local IP)."""
+    external = get_external_ip()
+    if not external:
+        # Can't determine external IP, assume not behind NAT
+        return False
+    local = get_local_ip()
+    return external != local
