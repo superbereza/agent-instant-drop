@@ -63,6 +63,27 @@ EOF
     systemctl --user daemon-reload
 fi
 
+# Cloudflared (tunnel support)
+CLOUDFLARED_BIN="$HOME/.drop/bin/cloudflared"
+if ! command -v cloudflared &>/dev/null && [[ ! -f "$CLOUDFLARED_BIN" ]]; then
+    echo "Installing cloudflared..."
+    mkdir -p "$HOME/.drop/bin"
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)  CF_ARCH="amd64" ;;
+        aarch64) CF_ARCH="arm64" ;;
+        armv7l)  CF_ARCH="arm" ;;
+        *)       CF_ARCH="amd64" ;;
+    esac
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${OS}-${CF_ARCH}" \
+        -o "$CLOUDFLARED_BIN"
+    chmod +x "$CLOUDFLARED_BIN"
+    echo "  ✓ cloudflared"
+else
+    echo "  ✓ cloudflared (already installed)"
+fi
+
 echo ""
 echo "Agent Instant Drop installed!"
 echo ""
