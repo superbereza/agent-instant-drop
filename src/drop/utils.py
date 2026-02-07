@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import platform
 import secrets
+import shutil
 import socket
 import string
 import subprocess
@@ -185,3 +186,18 @@ def is_behind_nat() -> bool:
         return False
     local = get_local_ip()
     return external != local
+
+
+def find_cloudflared() -> str | None:
+    """Find cloudflared binary. Returns path or None if not found."""
+    # Check PATH first
+    path = shutil.which("cloudflared")
+    if path:
+        return path
+
+    # Check ~/.drop/bin/
+    drop_bin = Path.home() / ".drop" / "bin" / "cloudflared"
+    if drop_bin.exists() and drop_bin.is_file():
+        return str(drop_bin)
+
+    return None
