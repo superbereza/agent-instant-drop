@@ -313,6 +313,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     running = False
     systemd_managed = False
+    tunnel_url = None
+
+    # Check tunnel state
+    state = tunnel.load_tunnel_state()
+    if state:
+        tunnel_url = state.get("url")
 
     if has_systemd():
         result = subprocess.run(
@@ -333,8 +339,11 @@ def cmd_status(args: argparse.Namespace) -> int:
                 storage.clear_pid()
 
     if running:
-        extra = " (systemd)" if systemd_managed else ""
-        print(f"Server: http://{host}:{port} (running{extra})")
+        if tunnel_url:
+            print(f"Server: {tunnel_url} (running, tunneled)")
+        else:
+            extra = " (systemd)" if systemd_managed else ""
+            print(f"Server: http://{host}:{port} (running{extra})")
     else:
         print("Server: not running")
 
