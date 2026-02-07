@@ -24,7 +24,8 @@ from datetime import datetime, UTC
 from pathlib import Path
 
 from . import storage
-from .utils import generate_page_id, generate_password, hash_password, detect_ip, load_manifest, MANIFEST_FILE, has_systemd
+from . import tunnel
+from .utils import generate_page_id, generate_password, hash_password, detect_ip, load_manifest, MANIFEST_FILE, has_systemd, is_behind_nat, find_cloudflared
 
 
 def _start_with_systemd(port: int, host: str) -> int:
@@ -60,13 +61,10 @@ def _start_with_systemd(port: int, host: str) -> int:
         capture_output=True,
         text=True,
     )
-    if result.stdout.strip() == "active":
-        print(f"Server started: http://{host}:{port}")
-        print("  (systemd managed, auto-restart enabled)")
-        return 0
-    else:
+    if result.stdout.strip() != "active":
         print("Error: Server failed to start", file=sys.stderr)
         return 1
+    return 0
 
 
 def _stop_with_systemd() -> int:
@@ -179,16 +177,31 @@ def cmd_start(args: argparse.Namespace) -> int:
             text=True,
         )
         if result.stdout.strip() == "active":
-            print(f"Server already running: http://{host}:{port}")
+            # Check if tunnel is running
+            state = tunnel.load_tunnel_state()
+            if state and state.get("url"):
+                print(f"Server already running: {state['url']}")
+            else:
+                print(f"Server already running: http://{host}:{port}")
             return 0
-        return _start_with_systemd(port, host)
+
+        exit_code = _start_with_systemd(port, host)
+        if exit_code != 0:
+            return exit_code
+
+        # Check for NAT and start tunnel
+        return _maybe_start_tunnel(args, port, host, systemd_managed=True)
 
     # Fallback: PID-based management
     pid = storage.load_pid()
     if pid:
         try:
             os.kill(pid, 0)
-            print(f"Server already running: http://{host}:{port}")
+            state = tunnel.load_tunnel_state()
+            if state and state.get("url"):
+                print(f"Server already running: {state['url']}")
+            else:
+                print(f"Server already running: http://{host}:{port}")
             return 0
         except OSError:
             storage.clear_pid()
@@ -212,13 +225,45 @@ def cmd_start(args: argparse.Namespace) -> int:
     time.sleep(0.5)
     try:
         os.kill(proc.pid, 0)
-        print(f"Server started: http://{host}:{port}")
-        print("  No systemd - auto-restart disabled")
-        return 0
     except OSError:
         print("Error: Server failed to start", file=sys.stderr)
         storage.clear_pid()
         return 1
+
+    # Check for NAT and start tunnel
+    return _maybe_start_tunnel(args, port, host, systemd_managed=False)
+
+
+def _maybe_start_tunnel(args: argparse.Namespace, port: int, host: str, systemd_managed: bool) -> int:
+    """Check for NAT and start tunnel if needed. Print status and return exit code."""
+    no_tunnel = getattr(args, 'no_tunnel', False)
+
+    if not no_tunnel and is_behind_nat():
+        cloudflared = find_cloudflared()
+        if cloudflared:
+            print("Detected NAT, starting tunnel...")
+            result = tunnel.start_tunnel(port)
+            if result:
+                tunnel_url, tunnel_pid = result
+                tunnel.save_tunnel_state(tunnel_url, tunnel_pid)
+                tunnel.start_watchdog(port)
+                print(f"Server started: {tunnel_url}")
+                print("  (tunneled via cloudflared)")
+                return 0
+            else:
+                print(f"Server started: http://{host}:{port}")
+                print("  Warning: Failed to start tunnel")
+        else:
+            print(f"Server started: http://{host}:{port}")
+            print("  Note: Behind NAT but cloudflared not found. Run ./install.sh")
+    else:
+        print(f"Server started: http://{host}:{port}")
+        if systemd_managed:
+            print("  (systemd managed, auto-restart enabled)")
+        else:
+            print("  No systemd - auto-restart disabled")
+
+    return 0
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
@@ -226,6 +271,13 @@ def cmd_stop(args: argparse.Namespace) -> int:
     # If name provided, stop app instead
     if hasattr(args, 'name') and args.name:
         return cmd_stop_app(args)
+
+    # Stop server tunnel if running
+    tunnel.stop_watchdog()
+    state = tunnel.load_tunnel_state()
+    if state:
+        tunnel.stop_tunnel(state.get("pid", 0))
+        tunnel.clear_tunnel_state()
 
     if has_systemd():
         result = subprocess.run(
