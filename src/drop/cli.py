@@ -504,6 +504,7 @@ def main() -> None:
     p_start.add_argument("name", nargs="?", help="App name/ID to start (omit for server)")
     p_start.add_argument("--port", "-p", type=int, default=8080, help="Server port (default: 8080)")
     p_start.add_argument("--host", help="Override auto-detected IP")
+    p_start.add_argument("--no-tunnel", action="store_true", help="Disable automatic tunnel when behind NAT")
     p_start.set_defaults(func=cmd_start)
 
     # stop
