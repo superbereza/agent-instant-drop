@@ -510,19 +510,31 @@ def cmd_list(args: argparse.Namespace) -> int:
     for page_id, info in pages.items():
         page_type = info.get("type", "static")
         name = info.get("name", "")
+        app_tunnel_url = info.get("tunnel_url", "")
 
         if page_type == "app":
-            # App: show direct port URL
+            # App: show tunnel URL if available, otherwise direct port
             port = info.get("port", 0)
-            url = f"http://{host}:{port}/"
+            if app_tunnel_url:
+                url = app_tunnel_url
+            else:
+                url = f"http://{host}:{port}/"
             status = storage.get_app_status(page_id)
             status_str = f" [{status}]"
         else:
-            # Static: show drop server URL
-            if name:
-                url = f"http://{host}:{server_port}/p/{page_id}/{name}/"
+            # Static: show tunnel URL if server has tunnel, otherwise drop server URL
+            server_tunnel = tunnel.load_tunnel_state()
+            if server_tunnel and server_tunnel.get("url"):
+                base_url = server_tunnel["url"]
+                if name:
+                    url = f"{base_url}/p/{page_id}/{name}/"
+                else:
+                    url = f"{base_url}/p/{page_id}/"
             else:
-                url = f"http://{host}:{server_port}/p/{page_id}/"
+                if name:
+                    url = f"http://{host}:{server_port}/p/{page_id}/{name}/"
+                else:
+                    url = f"http://{host}:{server_port}/p/{page_id}/"
             status_str = ""
 
         lock = "" if info["password_hash"] else " (public)"
