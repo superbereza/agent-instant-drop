@@ -58,7 +58,7 @@ drop stop
 - `--password` / `-p` — protect with auto-generated password
 - `--password <pass>` — protect with custom password
 - `--run "command"` / `-r "command"` — run command for apps
-- `--port <N>` — app port to proxy (required with --run)
+- `--port <N>` — app port (required with --run)
 - (no flags) — public access
 
 **URL format:** `http://host:port/p/<secret>/<name>/`
@@ -94,20 +94,19 @@ drop add ./dist/ --desc "Build output"
 drop start --port 9000
 ```
 
-## Apps
+## Apps (Lifecycle Manager)
 
-Run and expose applications with automatic port management:
+Register, start, and stop applications. Drop manages the process — the app runs directly on its own port. Drop does NOT proxy or add auth to apps; the app handles its own security.
 
 ```bash
-# Add an app with run command and port
+# Register an app with run command and port
 drop add ./app.py --run "flask run --port 5000" --port 5000 --name api
-# → http://192.168.1.50:8080/p/abc123/api/
-# → App registered (stopped)
+# → App registered: http://192.168.1.50:5000/
+# → Run 'drop start <id>' to start the app
 
 # Start the app
 drop start api
-# → Starting api...
-# → http://192.168.1.50:8080/p/abc123/api/ [running]
+# → App started: http://192.168.1.50:5000/
 
 # Stop the app
 drop stop api
@@ -115,7 +114,7 @@ drop stop api
 
 # List shows app status
 drop list
-# api [app] [running] http://192.168.1.50:8080/p/abc123/api/
+# api [app] [running] http://192.168.1.50:5000/
 # report [page] http://192.168.1.50:8080/p/def456/report/
 
 # Clean up crashed apps
@@ -124,9 +123,11 @@ drop cleanup
 
 **App lifecycle:**
 - `drop add --run --port` — registers app (stopped state)
-- `drop start <name>` — runs the command, proxies to port
+- `drop start <name>` — runs the command on specified port
 - `drop stop <name>` — kills the process
 - `drop cleanup` — removes crashed/orphaned apps
+
+**Apps vs pages:** Pages are served through the drop server (port 8080) with optional password protection. Apps run independently on their own port — add auth in the app itself if needed.
 
 **Status indicators:**
 - `[running]` — app process is active
@@ -187,7 +188,7 @@ Add ALL referenced directories to manifest (assets/, config/, js/, etc.)
 
 **Security:** `.env` files are always blocked, even if in manifest (except `.env.example`).
 
-**API calls won't work** — drop is a file server only. If HTML uses `fetch('/api/...')`, either embed mock data or use the actual backend server.
+**API calls won't work in pages** — drop serves static files only. If HTML uses `fetch('/api/...')`, either embed mock data or register as an app with `--run`.
 
 **Single files** work without manifest:
 ```bash
