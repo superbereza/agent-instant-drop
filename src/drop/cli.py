@@ -738,7 +738,8 @@ def cmd_list(args: argparse.Namespace) -> int:
             else:
                 url = f"http://{host}:{port}/"
             status = storage.get_app_status(page_id)
-            status_str = f" [{status}]"
+            auth_tag = " [auth]" if info.get("auth") else ""
+            status_str = f" [{status}]{auth_tag}"
         else:
             # Static: show tunnel URL if server has tunnel, otherwise drop server URL
             server_tunnel = tunnel.load_tunnel_state()
@@ -755,7 +756,10 @@ def cmd_list(args: argparse.Namespace) -> int:
                     url = f"http://{host}:{server_port}/p/{page_id}/"
             status_str = ""
 
-        lock = "" if info["password_hash"] else " (public)"
+        if page_type == "app":
+            lock = "" if info.get("auth") else " (public)"
+        else:
+            lock = "" if info["password_hash"] else " (public)"
 
         # Check source exists
         source_exists = Path(info["source"]).exists()
