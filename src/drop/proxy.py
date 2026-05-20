@@ -75,6 +75,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _proxy(self, method: str) -> None:
         if self._reject_upgrade():
             return
+        # Path must be absolute (start with "/"). Otherwise a crafted request
+        # line like "GET @evil.com/foo HTTP/1.1" would make urllib treat
+        # "127.0.0.1:<port>" as userinfo and connect to evil.com instead.
+        if not self.path.startswith("/"):
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"Bad request: path must be absolute.\n")
+            return
         if not self._check_auth():
             self.send_response(401)
             self.send_header("WWW-Authenticate", f'Basic realm="{AUTH_REALM}"')
