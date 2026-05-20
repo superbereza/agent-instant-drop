@@ -2,15 +2,16 @@
 """
 drop - Agent Instant Drop
 
-Drop any file, app, or prototype to your human.
+Drop any file, app, or prototype to your human. Password-protected by default.
 
 Examples:
-    drop start                    # Start server
-    drop add ./report.html        # Publish file
-    drop add ./dist/              # Publish folder
-    drop list                     # List pages
-    drop remove abc123            # Remove page
-    drop stop                     # Stop server
+    drop start                                          # Start server
+    drop add ./report.html                              # Publish (auto-password)
+    drop add ./report.html --public                     # Public link
+    drop add ./bin --run "..." --port N                 # App (auto basic auth)
+    drop list                                           # List from cwd
+    drop remove abc123                                  # Remove
+    drop stop                                           # Stop server
 """
 
 import argparse
@@ -834,7 +835,18 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # start
-    p_start = subparsers.add_parser("start", help="Start server or app")
+    p_start = subparsers.add_parser(
+        "start",
+        help="Start server or app",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  drop start                          # Start the drop server (default port 8080)\n"
+            "  drop start --port 9000              # Different port\n"
+            "  drop start myapp                    # Start a registered app\n"
+            "  drop start myapp --auth-insecure    # Start app + allow cleartext basic auth\n"
+        ),
+    )
     p_start.add_argument("name", nargs="?", help="App name/ID to start (omit for server)")
     p_start.add_argument("--port", "-p", type=int, default=8080, help="Server port (default: 8080)")
     p_start.add_argument("--host", help="Override auto-detected IP")
@@ -856,7 +868,20 @@ def main() -> None:
     p_status.set_defaults(func=cmd_status)
 
     # add
-    p_add = subparsers.add_parser("add", help="Publish a file or folder")
+    p_add = subparsers.add_parser(
+        "add",
+        help="Publish a file/folder/app (password-protected by default)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  drop add ./report.html                          # static + auto-password\n"
+            "  drop add ./report.html --public                 # public static\n"
+            "  drop add ./report.html --password mypass        # custom password\n"
+            "  drop add ./bin --run \"myserver\" --port 7777     # app + auto basic auth\n"
+            "  drop add ./bin --run \"myserver\" --port 7777 --public\n"
+            "  drop add ./bin --run \"myserver\" --port 7777 --auth basic:admin:s3cret\n"
+        ),
+    )
     p_add.add_argument("path", help="File or folder to publish")
     p_add.add_argument("--name", "-n", help="Human-readable name for URL (slug)")
     p_add.add_argument("--password", "-p", nargs="?", const=True, default=None,
