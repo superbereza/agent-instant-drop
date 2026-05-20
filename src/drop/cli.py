@@ -317,29 +317,34 @@ def cmd_stop_app(args: argparse.Namespace) -> int:
 
     full_id = storage.get_full_page_id(args.name)
 
-    # Stop tunnel if running
+    # Stop tunnel
     tunnel_pid = page.get("tunnel_pid", 0)
     if tunnel_pid > 0:
         tunnel.stop_tunnel(tunnel_pid)
-        storage.update_page_tunnel(full_id, "", 0)
 
-    status = storage.get_app_status(args.name)
-    if status != "running":
-        print("App not running")
-        return 0
-
-    pid = page.get("pid", 0)
-    if pid <= 0:
-        print("App was not running")
-    else:
+    # Stop proxy
+    proxy_pid = page.get("proxy_pid", 0)
+    if proxy_pid > 0:
         try:
-            # Send signal to process group to kill shell and all children
-            os.killpg(pid, signal.SIGTERM)
-            print("App stopped")
+            os.kill(proxy_pid, signal.SIGTERM)
         except OSError:
-            print("App was not running")
+            pass
 
-    storage.update_page_pid(full_id, 0)
+    # Stop app
+    pid = page.get("pid", 0)
+    status = storage.get_app_status(args.name)
+    if pid > 0:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+    storage.clear_page_runtime(full_id)
+
+    if status == "running":
+        print("App stopped")
+    else:
+        print("App was not running")
     return 0
 
 
