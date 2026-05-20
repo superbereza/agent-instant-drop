@@ -10,7 +10,7 @@ from typing import TypedDict
 class PageInfo(TypedDict):
     source: str
     is_dir: bool
-    password_hash: str  # Empty string if no password
+    password_hash: str  # Empty string if no password (static cookie-form)
     created_at: str
     description: str  # Optional description
     name: str  # URL slug (human-readable name)
@@ -21,6 +21,11 @@ class PageInfo(TypedDict):
     pid: int  # Running process PID (for apps, 0 if not running)
     tunnel_url: str  # Tunnel URL (empty if no tunnel)
     tunnel_pid: int  # Tunnel process PID (0 if no tunnel)
+    # App basic auth (V2)
+    auth: dict | None  # {"scheme": "basic", "user": str, "password_hash": str} or None
+    public: bool  # True if user explicitly passed --public
+    proxy_pid: int  # Proxy process PID (0 if no proxy)
+    proxy_port: int  # Proxy listen port (0 if no proxy)
 
 
 DROP_DIR = Path.home() / ".drop"
@@ -60,6 +65,8 @@ def add_page(
     page_type: str = "static",
     run_cmd: str = "",
     port: int = 0,
+    auth: dict | None = None,
+    public: bool = False,
 ) -> None:
     """Add a page to registry."""
     pages = load_pages()
@@ -76,6 +83,10 @@ def add_page(
         "pid": 0,
         "tunnel_url": "",
         "tunnel_pid": 0,
+        "auth": auth,
+        "public": public,
+        "proxy_pid": 0,
+        "proxy_port": 0,
     }
     save_pages(pages)
 
