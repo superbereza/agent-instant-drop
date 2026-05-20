@@ -237,30 +237,70 @@ def cmd_start_app(args: argparse.Namespace) -> int:
         proxy_pid, proxy_port = result
         storage.update_page_proxy(full_id, proxy_pid, proxy_port)
 
+    # Tunnel + URL printing
+    auth_insecure = getattr(args, 'auth_insecure', False)
+    no_tunnel = getattr(args, 'no_tunnel', False)
     target_port = proxy_port if auth_block else app_port
 
-    # Check for NAT and start tunnel
-    no_tunnel = getattr(args, 'no_tunnel', False)
-    if not no_tunnel and is_behind_nat():
-        cloudflared = find_cloudflared()
-        if cloudflared:
-            print("Detected NAT, starting tunnel...")
-            result = tunnel.start_tunnel(target_port)
-            if result:
-                tunnel_url, tunnel_pid = result
-                storage.update_page_tunnel(full_id, tunnel_url, tunnel_pid)
-                print(f"App started: {tunnel_url}")
-                print("  (tunneled via cloudflared)")
-                return 0
-            else:
-                print(f"App started: http://{host}:{target_port}/")
-                print("  Warning: Failed to start tunnel")
-        else:
-            print(f"App started: http://{host}:{target_port}/")
-            print("  Note: Behind NAT but cloudflared not found. Run ./install.sh")
-    else:
-        print(f"App started: http://{host}:{target_port}/")
+    cleartext_mode = bool(auth_block) and auth_insecure
 
+    if cleartext_mode:
+        # Skip tunnel entirely, print cleartext warning, return
+        url = f"http://{host}:{target_port}/"
+        print(f"App started: {url}")
+        if auth_block:
+            print(f"  Auth: basic ({auth_block['user']} / <hidden> — see 'drop add' output)")
+        print(
+            "⚠ CLEARTEXT: basic auth credentials transmitted in base64 over plain HTTP.\n"
+            "  Anyone on the network path can read them. Use only on trusted LAN.",
+            file=sys.stderr,
+        )
+        return 0
+
+    # For apps with auth, always attempt tunnel (HTTPS termination needed).
+    # For apps without auth, retain existing NAT-only behavior.
+    want_tunnel = not no_tunnel and (bool(auth_block) or is_behind_nat())
+
+    if want_tunnel:
+        cloudflared = find_cloudflared()
+        if not cloudflared:
+            if auth_block:
+                _abort_auth_app(full_id, proxy_pid, proc.pid,
+                    "cloudflared not installed",
+                    "Install via ./install.sh or pass --auth-insecure to allow cleartext.")
+                return 1
+            else:
+                print(f"App started: http://{host}:{app_port}/")
+                print("  Note: Behind NAT but cloudflared not found. Run ./install.sh")
+                return 0
+        print("Starting tunnel...")
+        result = tunnel.start_tunnel(target_port)
+        if not result:
+            if auth_block:
+                _abort_auth_app(full_id, proxy_pid, proc.pid,
+                    "tunnel failed to start",
+                    "Retry, or pass --auth-insecure to allow cleartext.")
+                return 1
+            else:
+                print(f"App started: http://{host}:{app_port}/")
+                print("  Warning: Failed to start tunnel")
+                return 0
+        tunnel_url, tunnel_pid = result
+        storage.update_page_tunnel(full_id, tunnel_url, tunnel_pid)
+        print(f"App started: {tunnel_url}")
+        if auth_block:
+            print(f"  Auth: basic ({auth_block['user']} / <hidden> — see 'drop add' output)")
+        print("  (tunneled via cloudflared)")
+        return 0
+
+    # No tunnel wanted.
+    if auth_block and no_tunnel:
+        _abort_auth_app(full_id, proxy_pid, proc.pid,
+            "--no-tunnel conflicts with --auth (cleartext over HTTP)",
+            "Drop --no-tunnel, or pass --auth-insecure to confirm.")
+        return 1
+
+    print(f"App started: http://{host}:{app_port}/")
     return 0
 
 
@@ -786,6 +826,11 @@ def main() -> None:
     p_start.add_argument("--port", "-p", type=int, default=8080, help="Server port (default: 8080)")
     p_start.add_argument("--host", help="Override auto-detected IP")
     p_start.add_argument("--no-tunnel", action="store_true", help="Disable automatic tunnel when behind NAT")
+    p_start.add_argument(
+        "--auth-insecure", action="store_true",
+        help="Allow cleartext basic auth without tunnel (override safety check). "
+             "Use only on trusted LAN/dev."
+    )
     p_start.set_defaults(func=cmd_start)
 
     # stop
