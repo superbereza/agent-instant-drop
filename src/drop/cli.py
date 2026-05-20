@@ -287,6 +287,7 @@ def cmd_start_app(args: argparse.Namespace) -> int:
                 return 0
         tunnel_url, tunnel_pid = result
         storage.update_page_tunnel(full_id, tunnel_url, tunnel_pid)
+        tunnel.start_app_watchdog(full_id, target_port)
         print(f"App started: {tunnel_url}")
         if auth_block:
             print(f"  Auth: basic ({auth_block['user']} / <hidden> — see 'drop add' output)")
@@ -316,6 +317,9 @@ def cmd_stop_app(args: argparse.Namespace) -> int:
         return 1
 
     full_id = storage.get_full_page_id(args.name)
+
+    # Stop watchdog (if any)
+    tunnel.stop_app_watchdog(full_id)
 
     # Stop tunnel
     tunnel_pid = page.get("tunnel_pid", 0)
