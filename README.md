@@ -34,7 +34,7 @@ drop stop                                               # Stop server
 - Human-readable URLs: `/p/<secret>/<name>/`
 - External IP detection for shareable URLs
 - Rate limiting on static-page passwords (3 attempts/min/IP)
-- Auto cloudflared tunnel when behind NAT; per-app watchdog
+- Auto cloudflared tunnel when behind NAT
 
 ## For Humans
 

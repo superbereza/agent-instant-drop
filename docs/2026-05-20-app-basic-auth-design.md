@@ -73,7 +73,7 @@ drop start <appname>
 
 10. **Proxy = stdlib `http.server` + `urllib.request`** в новом модуле `src/drop/proxy.py`. ~50 LOC. Запускается как `python -m drop.proxy --page-id <id> --proxy-port <N> --app-port <M> --bind <127.0.0.1|0.0.0.0>`. Subprocess управляется `subprocess.Popen` по аналогии с `tunnel.py`.
 
-11. **App tunnel watchdog** — добавляем (parity с server tunnel'ом). При `--auth` смерть tunnel'я = недоступный URL без auth-замены, поэтому watchdog критичнее чем для apps без auth. Реализуется по аналогии с `tunnel.start_watchdog`.
+11. **App tunnel watchdog — deferred to V2.** Изначально планировался parity с server watchdog'ом, но при имплементации обнаружено что *оба* watchdog'а (старый server + новый app) запускаются как `daemon=True` потоки в short-lived CLI-процессе, который завершается сразу после `drop start` — daemon-потоки умирают вместе с процессом. Pre-existing баг в server watchdog не трогаем; новый app watchdog не добавляем чтобы не плодить dead-code. Реальный фикс требует отдельного long-lived `drop-watchdog` subprocess'а — отдельная задача в V2.
 
 12. **`drop list` indicator** — тэг `[auth]` рядом с `[running]`/`[stopped]` для apps с auth. Creds в list НЕ показываем (только на `add` и `start`).
 

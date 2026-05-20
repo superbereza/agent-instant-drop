@@ -156,7 +156,7 @@ Drop uses cloudflared to create a public HTTPS URL.
 
 - **Behind NAT** (laptop on a home router): tunnel auto-starts so the URL is reachable from outside.
 - **Apps with `--auth`**: tunnel is always required (HTTPS termination for basic auth). If cloudflared is missing or `--no-tunnel` is set, drop refuses to start with a hint about `--auth-insecure`.
-- **Watchdog**: if cloudflared crashes, drop restarts it automatically. The new URL replaces the old one in `drop list`.
+- **No automatic tunnel restart**: if cloudflared crashes after `drop start`, the tunnel URL stops working — `drop stop <app>` then `drop start <app>` to recover.
 
 ```bash
 # Behind NAT - tunnel starts automatically
