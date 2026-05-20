@@ -24,6 +24,11 @@ def generate_password(length: int = 6) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+def generate_auth_creds() -> tuple[str, str]:
+    """Generate (user, password) for basic auth. User is fixed 'drop'."""
+    return ("drop", generate_password(12))
+
+
 def hash_password(password: str) -> str:
     """Hash password with SHA256."""
     return "sha256:" + hashlib.sha256(password.encode()).hexdigest()
