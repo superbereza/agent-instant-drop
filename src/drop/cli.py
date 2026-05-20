@@ -18,7 +18,6 @@ import argparse
 import os
 import re
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -27,28 +26,21 @@ from pathlib import Path
 
 from . import storage
 from . import tunnel
-from .utils import generate_page_id, generate_password, generate_auth_creds, hash_password, detect_ip, load_manifest, MANIFEST_FILE, has_systemd, is_behind_nat, find_cloudflared
-
-
-def _allocate_free_port() -> int:
-    """Allocate a free TCP port from the OS."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-def _wait_for_port(host: str, port: int, timeout: float = 5.0) -> bool:
-    """Block until host:port accepts connections or timeout."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.5)
-            try:
-                s.connect((host, port))
-                return True
-            except OSError:
-                time.sleep(0.1)
-    return False
+from .utils import (
+    DEFAULT_AUTH_USER,
+    MANIFEST_FILE,
+    allocate_free_port,
+    detect_ip,
+    find_cloudflared,
+    generate_auth_creds,
+    generate_page_id,
+    generate_password,
+    has_systemd,
+    hash_password,
+    is_behind_nat,
+    load_manifest,
+    wait_for_port,
+)
 
 
 def _print_side_door_warning() -> None:
@@ -62,7 +54,7 @@ def _print_side_door_warning() -> None:
 
 def _spawn_proxy(page_id: str, app_port: int, bind: str) -> tuple[int, int] | None:
     """Spawn drop.proxy subprocess. Returns (proxy_pid, proxy_port) or None on failure."""
-    proxy_port = _allocate_free_port()
+    proxy_port = allocate_free_port()
     cmd = [
         sys.executable, "-m", "drop.proxy",
         "--page-id", page_id,
@@ -77,7 +69,7 @@ def _spawn_proxy(page_id: str, app_port: int, bind: str) -> tuple[int, int] | No
         start_new_session=True,
     )
     probe_host = "127.0.0.1" if bind == "0.0.0.0" else bind
-    if not _wait_for_port(probe_host, proxy_port, timeout=5):
+    if not wait_for_port(probe_host, proxy_port, timeout=5):
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except OSError:
@@ -117,6 +109,32 @@ def _parse_auth_spec(spec: str) -> tuple[str, str | None, str | None]:
             raise ValueError("--auth basic:user:pass requires non-empty user and password")
         return ("basic", user, password)
     raise ValueError("--auth format: 'basic' or 'basic:user:pass'")
+
+
+def _resolve_app_auth(args: argparse.Namespace) -> tuple[dict | None, tuple[str, str] | None]:
+    """Return (auth_block, (user, plaintext_password)) or (None, None) if --public."""
+    if args.public:
+        return (None, None)
+    if args.auth is not None:
+        scheme, user, raw_pw = _parse_auth_spec(args.auth)
+        if user is None:
+            user, raw_pw = generate_auth_creds()
+    else:
+        scheme = "basic"
+        user, raw_pw = generate_auth_creds()
+    auth_block = {"scheme": scheme, "user": user, "password_hash": hash_password(raw_pw)}
+    return (auth_block, (user, raw_pw))
+
+
+def _resolve_static_password(args: argparse.Namespace) -> tuple[str | None, str]:
+    """Return (plaintext_password, password_hash). password is None if --public."""
+    if args.public:
+        return (None, "")
+    if args.password is not None:
+        raw_pw = args.password if args.password is not True else generate_password()
+    else:
+        raw_pw = generate_password()
+    return (raw_pw, hash_password(raw_pw))
 
 
 def _start_with_systemd(port: int, host: str) -> int:
@@ -217,14 +235,17 @@ def cmd_start_app(args: argparse.Namespace) -> int:
     host = storage.load_host() or detect_ip()
     app_port = page["port"]
 
+    auth_insecure = getattr(args, 'auth_insecure', False)
+    no_tunnel = getattr(args, 'no_tunnel', False)
+
     # Auth path: spawn proxy in front of app
     auth_block = page.get("auth")
     proxy_pid = 0
     proxy_port = 0
     if auth_block:
         _print_side_door_warning()
-        # Bind: 127.0.0.1 by default (tunnel-only); 0.0.0.0 only under --auth-insecure
-        bind_addr = "0.0.0.0" if getattr(args, 'auth_insecure', False) else "127.0.0.1"
+        # Bind 127.0.0.1 by default (tunnel-only); 0.0.0.0 only under --auth-insecure
+        bind_addr = "0.0.0.0" if auth_insecure else "127.0.0.1"
         result = _spawn_proxy(full_id, app_port, bind_addr)
         if not result:
             try:
@@ -237,11 +258,7 @@ def cmd_start_app(args: argparse.Namespace) -> int:
         proxy_pid, proxy_port = result
         storage.update_page_proxy(full_id, proxy_pid, proxy_port)
 
-    # Tunnel + URL printing
-    auth_insecure = getattr(args, 'auth_insecure', False)
-    no_tunnel = getattr(args, 'no_tunnel', False)
     target_port = proxy_port if auth_block else app_port
-
     cleartext_mode = bool(auth_block) and auth_insecure
 
     if cleartext_mode:
@@ -612,47 +629,14 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     page_id = generate_page_id()
 
-    # Resolve auth/password: default = protected (auto-gen) unless --public
-    password = None
-    password_hash = ""
-    auth_block = None
-    auth_creds_shown = None  # (user, password) tuple to print at end
-
     if is_app:
-        if args.public:
-            pass  # explicit public, no auth
-        elif args.auth is not None:
-            scheme, user, raw_pw = _parse_auth_spec(args.auth)
-            if user is None:
-                user, raw_pw = generate_auth_creds()
-            auth_block = {
-                "scheme": scheme,
-                "user": user,
-                "password_hash": hash_password(raw_pw),
-            }
-            auth_creds_shown = (user, raw_pw)
-        else:
-            # Default for apps: auto-gen basic auth
-            user, raw_pw = generate_auth_creds()
-            auth_block = {
-                "scheme": "basic",
-                "user": user,
-                "password_hash": hash_password(raw_pw),
-            }
-            auth_creds_shown = (user, raw_pw)
+        auth_block, auth_creds_shown = _resolve_app_auth(args)
+        password = None
+        password_hash = ""
     else:
-        # Static page
-        if args.public:
-            pass  # explicit public, no password
-        elif args.password is not None:
-            raw_pw = args.password if args.password is not True else generate_password()
-            password = raw_pw
-            password_hash = hash_password(raw_pw)
-        else:
-            # Default for static: auto-gen password
-            raw_pw = generate_password()
-            password = raw_pw
-            password_hash = hash_password(raw_pw)
+        password, password_hash = _resolve_static_password(args)
+        auth_block = None
+        auth_creds_shown = None
 
     name = args.name or ""
 

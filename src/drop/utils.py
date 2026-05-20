@@ -8,6 +8,7 @@ import shutil
 import socket
 import string
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -24,9 +25,13 @@ def generate_password(length: int = 6) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+DEFAULT_AUTH_USER = "drop"
+AUTH_REALM = "drop"
+
+
 def generate_auth_creds() -> tuple[str, str]:
-    """Generate (user, password) for basic auth. User is fixed 'drop'."""
-    return ("drop", generate_password(12))
+    """Generate (user, password) for basic auth."""
+    return (DEFAULT_AUTH_USER, generate_password(12))
 
 
 def hash_password(password: str) -> str:
@@ -59,6 +64,27 @@ def get_external_ip(timeout: float = 2.0) -> str | None:
     except Exception:
         pass
     return None
+
+
+def allocate_free_port() -> int:
+    """Allocate a free TCP port from the OS."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+def wait_for_port(host: str, port: int, timeout: float = 5.0) -> bool:
+    """Block until host:port accepts connections or timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            try:
+                s.connect((host, port))
+                return True
+            except OSError:
+                time.sleep(0.1)
+    return False
 
 
 def get_local_ip() -> str:

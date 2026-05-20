@@ -7,13 +7,24 @@ only; WebSocket / Upgrade requests are rejected with 501.
 
 import argparse
 import base64
+import binascii
 import sys
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import storage
-from .utils import verify_password
+from .utils import AUTH_REALM, verify_password
+
+
+# Headers we never copy from upstream — BaseHTTPRequestHandler.send_response()
+# already sets Server/Date, and Connection/Transfer-Encoding are hop-by-hop.
+_HOP_BY_HOP_RESPONSE = frozenset({"transfer-encoding", "connection", "server", "date"})
+
+# Headers we never forward client→upstream — Host is set by urllib from the
+# upstream URL, Authorization is the proxy's own credentials, Content-Length
+# is recomputed by urllib, Connection is hop-by-hop.
+_HOP_BY_HOP_REQUEST = frozenset({"host", "authorization", "content-length", "connection"})
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -41,7 +52,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return False
         try:
             decoded = base64.b64decode(header[6:]).decode("utf-8")
-        except Exception:
+        except (binascii.Error, UnicodeDecodeError):
             return False
         user, sep, pw = decoded.partition(":")
         if not sep:
@@ -66,7 +77,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
         if not self._check_auth():
             self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="drop"')
+            self.send_header("WWW-Authenticate", f'Basic realm="{AUTH_REALM}"')
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"Authentication required.\n")
@@ -78,32 +89,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
         url = f"http://127.0.0.1:{self.APP_PORT}{self.path}"
         req = urllib.request.Request(url, data=body, method=method)
         for h, v in self.headers.items():
-            if h.lower() in ("host", "authorization", "content-length", "connection"):
-                continue
-            req.add_header(h, v)
+            if h.lower() not in _HOP_BY_HOP_REQUEST:
+                req.add_header(h, v)
 
         try:
             with _opener.open(req, timeout=30) as resp:
-                self.send_response(resp.status)
-                for h, v in resp.headers.items():
-                    if h.lower() in ("transfer-encoding", "connection", "server", "date"):
-                        continue
-                    self.send_header(h, v)
-                self.end_headers()
-                self.wfile.write(resp.read())
+                self._forward_response(resp.status, resp.headers, resp.read())
         except urllib.error.HTTPError as e:
-            self.send_response(e.code)
-            for h, v in e.headers.items():
-                if h.lower() in ("transfer-encoding", "connection", "server", "date"):
-                    continue
-                self.send_header(h, v)
-            self.end_headers()
-            self.wfile.write(e.read())
+            self._forward_response(e.code, e.headers, e.read())
         except Exception as e:
             self.send_response(502)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(f"proxy error: {e}\n".encode())
+
+    def _forward_response(self, status: int, headers, body: bytes) -> None:
+        self.send_response(status)
+        for h, v in headers.items():
+            if h.lower() not in _HOP_BY_HOP_RESPONSE:
+                self.send_header(h, v)
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self) -> None: self._proxy("GET")
     def do_POST(self) -> None: self._proxy("POST")
