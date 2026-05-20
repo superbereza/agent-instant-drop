@@ -162,6 +162,33 @@ def update_page_tunnel(page_id: str, tunnel_url: str, tunnel_pid: int) -> bool:
     return True
 
 
+def update_page_proxy(page_id: str, proxy_pid: int, proxy_port: int) -> bool:
+    """Update proxy info for a page. Returns True if found."""
+    pages = load_pages()
+    full_id = get_full_page_id(page_id)
+    if not full_id:
+        return False
+    pages[full_id]["proxy_pid"] = proxy_pid
+    pages[full_id]["proxy_port"] = proxy_port
+    save_pages(pages)
+    return True
+
+
+def clear_page_runtime(page_id: str) -> bool:
+    """Zero out all runtime fields (pid/tunnel/proxy). Returns True if found."""
+    pages = load_pages()
+    full_id = get_full_page_id(page_id)
+    if not full_id:
+        return False
+    pages[full_id]["pid"] = 0
+    pages[full_id]["tunnel_url"] = ""
+    pages[full_id]["tunnel_pid"] = 0
+    pages[full_id]["proxy_pid"] = 0
+    pages[full_id]["proxy_port"] = 0
+    save_pages(pages)
+    return True
+
+
 def get_app_status(page_id: str) -> str:
     """Get app status: 'running', 'stopped', or 'crashed'."""
     page = get_page(page_id)
