@@ -25,7 +25,23 @@ from pathlib import Path
 
 from . import storage
 from . import tunnel
-from .utils import generate_page_id, generate_password, hash_password, detect_ip, load_manifest, MANIFEST_FILE, has_systemd, is_behind_nat, find_cloudflared
+from .utils import generate_page_id, generate_password, generate_auth_creds, hash_password, detect_ip, load_manifest, MANIFEST_FILE, has_systemd, is_behind_nat, find_cloudflared
+
+
+def _parse_auth_spec(spec: str) -> tuple[str, str | None, str | None]:
+    """Parse --auth value. Returns (scheme, user_or_None, password_or_None)."""
+    parts = spec.split(":", 2)
+    scheme = parts[0]
+    if scheme != "basic":
+        raise ValueError(f"unsupported auth scheme: {scheme!r} (only 'basic' supported)")
+    if len(parts) == 1:
+        return ("basic", None, None)
+    if len(parts) == 3:
+        user, password = parts[1], parts[2]
+        if not user or not password:
+            raise ValueError("--auth basic:user:pass requires non-empty user and password")
+        return ("basic", user, password)
+    raise ValueError("--auth format: 'basic' or 'basic:user:pass'")
 
 
 def _start_with_systemd(port: int, host: str) -> int:
@@ -421,6 +437,26 @@ def cmd_add(args: argparse.Namespace) -> int:
         print("Error: --run is required when using --port", file=sys.stderr)
         return 1
 
+    # Auth flag validation
+    if args.auth is not None and not is_app:
+        print("Error: --auth only applies to apps (use with --run)", file=sys.stderr)
+        return 1
+    if args.public and args.password is not None:
+        print("Error: cannot combine --password with --public", file=sys.stderr)
+        return 1
+    if args.public and args.auth is not None:
+        print("Error: cannot combine --auth with --public", file=sys.stderr)
+        return 1
+    if args.auth is not None and args.password is not None:
+        print("Error: cannot combine --auth (apps) with --password (static)", file=sys.stderr)
+        return 1
+    if args.auth is not None:
+        try:
+            _parse_auth_spec(args.auth)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+
     # Directory requires manifest (for static only)
     if source.is_dir() and not is_app:
         manifest = load_manifest(source)
@@ -633,6 +669,15 @@ def main() -> None:
     p_add.add_argument("--desc", "-d", help="Description for listing")
     p_add.add_argument("--run", "-r", help="Command to run (makes this an app)")
     p_add.add_argument("--port", type=int, help="Port the app listens on (required with --run)")
+    p_add.add_argument(
+        "--auth", nargs="?", const="basic", default=None,
+        help="Basic auth proxy for apps. 'basic' auto-gens drop:<12char>. "
+             "'basic:user:pass' for explicit creds. Apps only."
+    )
+    p_add.add_argument(
+        "--public", action="store_true",
+        help="Explicit opt-out from default auth (page/app stays public)."
+    )
     p_add.set_defaults(func=cmd_add)
 
     # list
