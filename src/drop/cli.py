@@ -28,6 +28,81 @@ from . import tunnel
 from .utils import generate_page_id, generate_password, generate_auth_creds, hash_password, detect_ip, load_manifest, MANIFEST_FILE, has_systemd, is_behind_nat, find_cloudflared
 
 
+def _allocate_free_port() -> int:
+    """Allocate a free TCP port from the OS."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_port(host: str, port: int, timeout: float = 5.0) -> bool:
+    """Block until host:port accepts connections or timeout."""
+    import socket
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            try:
+                s.connect((host, port))
+                return True
+            except OSError:
+                time.sleep(0.1)
+    return False
+
+
+def _print_side_door_warning() -> None:
+    print(
+        "⚠ --auth protects tunnel only. If your app binds 0.0.0.0 on a public IP,\n"
+        "  app port is still reachable bypassing auth. "
+        "Use --host 127.0.0.1 in --run.",
+        file=sys.stderr,
+    )
+
+
+def _spawn_proxy(page_id: str, app_port: int, bind: str) -> tuple[int, int] | None:
+    """Spawn drop.proxy subprocess. Returns (proxy_pid, proxy_port) or None on failure."""
+    proxy_port = _allocate_free_port()
+    cmd = [
+        sys.executable, "-m", "drop.proxy",
+        "--page-id", page_id,
+        "--proxy-port", str(proxy_port),
+        "--app-port", str(app_port),
+        "--bind", bind,
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    probe_host = "127.0.0.1" if bind == "0.0.0.0" else bind
+    if not _wait_for_port(probe_host, proxy_port, timeout=5):
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        return None
+    return (proc.pid, proxy_port)
+
+
+def _abort_auth_app(full_id: str, proxy_pid: int, app_pid: int, reason: str, hint: str) -> None:
+    """Kill proxy + app, clear runtime state, print error + hint."""
+    if proxy_pid > 0:
+        try:
+            os.killpg(proxy_pid, signal.SIGTERM)
+        except OSError:
+            pass
+    if app_pid > 0:
+        try:
+            os.killpg(app_pid, signal.SIGTERM)
+        except OSError:
+            pass
+    storage.clear_page_runtime(full_id)
+    print(f"Error: {reason}", file=sys.stderr)
+    print(f"  Hint: {hint}", file=sys.stderr)
+
+
 def _parse_auth_spec(spec: str) -> tuple[str, str | None, str | None]:
     """Parse --auth value. Returns (scheme, user_or_None, password_or_None)."""
     parts = spec.split(":", 2)
@@ -142,13 +217,35 @@ def cmd_start_app(args: argparse.Namespace) -> int:
     host = storage.load_host() or detect_ip()
     app_port = page["port"]
 
+    # Auth path: spawn proxy in front of app
+    auth_block = page.get("auth")
+    proxy_pid = 0
+    proxy_port = 0
+    if auth_block:
+        _print_side_door_warning()
+        # Bind: 127.0.0.1 by default (tunnel-only); 0.0.0.0 only under --auth-insecure
+        bind_addr = "0.0.0.0" if getattr(args, 'auth_insecure', False) else "127.0.0.1"
+        result = _spawn_proxy(full_id, app_port, bind_addr)
+        if not result:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except OSError:
+                pass
+            storage.update_page_pid(full_id, 0)
+            print("Error: proxy failed to start", file=sys.stderr)
+            return 1
+        proxy_pid, proxy_port = result
+        storage.update_page_proxy(full_id, proxy_pid, proxy_port)
+
+    target_port = proxy_port if auth_block else app_port
+
     # Check for NAT and start tunnel
     no_tunnel = getattr(args, 'no_tunnel', False)
     if not no_tunnel and is_behind_nat():
         cloudflared = find_cloudflared()
         if cloudflared:
             print("Detected NAT, starting tunnel...")
-            result = tunnel.start_tunnel(app_port)
+            result = tunnel.start_tunnel(target_port)
             if result:
                 tunnel_url, tunnel_pid = result
                 storage.update_page_tunnel(full_id, tunnel_url, tunnel_pid)
@@ -156,13 +253,13 @@ def cmd_start_app(args: argparse.Namespace) -> int:
                 print("  (tunneled via cloudflared)")
                 return 0
             else:
-                print(f"App started: http://{host}:{app_port}/")
+                print(f"App started: http://{host}:{target_port}/")
                 print("  Warning: Failed to start tunnel")
         else:
-            print(f"App started: http://{host}:{app_port}/")
+            print(f"App started: http://{host}:{target_port}/")
             print("  Note: Behind NAT but cloudflared not found. Run ./install.sh")
     else:
-        print(f"App started: http://{host}:{app_port}/")
+        print(f"App started: http://{host}:{target_port}/")
 
     return 0
 
