@@ -470,13 +470,47 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     page_id = generate_page_id()
 
-    # Handle password (default: no password)
-    if args.password:
-        password = args.password if args.password is not True else generate_password()
-        password_hash = hash_password(password)
+    # Resolve auth/password: default = protected (auto-gen) unless --public
+    password = None
+    password_hash = ""
+    auth_block = None
+    auth_creds_shown = None  # (user, password) tuple to print at end
+
+    if is_app:
+        if args.public:
+            pass  # explicit public, no auth
+        elif args.auth is not None:
+            scheme, user, raw_pw = _parse_auth_spec(args.auth)
+            if user is None:
+                user, raw_pw = generate_auth_creds()
+            auth_block = {
+                "scheme": scheme,
+                "user": user,
+                "password_hash": hash_password(raw_pw),
+            }
+            auth_creds_shown = (user, raw_pw)
+        else:
+            # Default for apps: auto-gen basic auth
+            user, raw_pw = generate_auth_creds()
+            auth_block = {
+                "scheme": "basic",
+                "user": user,
+                "password_hash": hash_password(raw_pw),
+            }
+            auth_creds_shown = (user, raw_pw)
     else:
-        password = None
-        password_hash = ""
+        # Static page
+        if args.public:
+            pass  # explicit public, no password
+        elif args.password is not None:
+            raw_pw = args.password if args.password is not True else generate_password()
+            password = raw_pw
+            password_hash = hash_password(raw_pw)
+        else:
+            # Default for static: auto-gen password
+            raw_pw = generate_password()
+            password = raw_pw
+            password_hash = hash_password(raw_pw)
 
     name = args.name or ""
 
@@ -490,6 +524,8 @@ def cmd_add(args: argparse.Namespace) -> int:
         page_type="app" if is_app else "static",
         run_cmd=args.run or "",
         port=args.port or 0,
+        auth=auth_block,
+        public=bool(args.public),
     )
 
     # Get URL
@@ -497,20 +533,24 @@ def cmd_add(args: argparse.Namespace) -> int:
     host = storage.load_host() or detect_ip()
 
     if is_app:
-        # App URL is direct port access
         url = f"http://{host}:{args.port}/"
         print(f"App registered: {url}")
+        if auth_creds_shown:
+            user, raw_pw = auth_creds_shown
+            print(f"  Auth: basic ({user} / {raw_pw})")
+        elif args.public:
+            print("  (public — no auth)")
         print(f"Run 'drop start {page_id}' to start the app")
     else:
-        # Static URL through drop server
         if name:
             url = f"http://{host}:{server_port}/p/{page_id}/{name}/"
         else:
             url = f"http://{host}:{server_port}/p/{page_id}/"
         print(f"Published: {url}")
-
-    if password:
-        print(f"Password: {password}")
+        if password:
+            print(f"Password: {password}")
+        elif args.public:
+            print("  (public — no password)")
 
     return 0
 
