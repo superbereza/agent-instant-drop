@@ -18,6 +18,7 @@ import argparse
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -31,7 +32,6 @@ from .utils import generate_page_id, generate_password, generate_auth_creds, has
 
 def _allocate_free_port() -> int:
     """Allocate a free TCP port from the OS."""
-    import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return s.getsockname()[1]
@@ -39,7 +39,6 @@ def _allocate_free_port() -> int:
 
 def _wait_for_port(host: str, port: int, timeout: float = 5.0) -> bool:
     """Block until host:port accepts connections or timeout."""
-    import socket
     deadline = time.time() + timeout
     while time.time() < deadline:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

@@ -16,6 +16,21 @@ from . import storage
 from .utils import verify_password
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Re-raise 30x as HTTPError so the reverse-proxy forwards Location header."""
+
+    def http_error_301(self, req, fp, code, msg, headers):
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+    http_error_302 = http_error_301
+    http_error_303 = http_error_301
+    http_error_307 = http_error_301
+    http_error_308 = http_error_301
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+
+
 class ProxyHandler(BaseHTTPRequestHandler):
     APP_PORT: int
     AUTH: dict  # {"scheme": "basic", "user": str, "password_hash": str}
@@ -68,10 +83,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             req.add_header(h, v)
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with _opener.open(req, timeout=30) as resp:
                 self.send_response(resp.status)
                 for h, v in resp.headers.items():
-                    if h.lower() in ("transfer-encoding", "connection"):
+                    if h.lower() in ("transfer-encoding", "connection", "server", "date"):
                         continue
                     self.send_header(h, v)
                 self.end_headers()
@@ -79,7 +94,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             self.send_response(e.code)
             for h, v in e.headers.items():
-                if h.lower() in ("transfer-encoding", "connection"):
+                if h.lower() in ("transfer-encoding", "connection", "server", "date"):
                     continue
                 self.send_header(h, v)
             self.end_headers()
