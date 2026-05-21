@@ -1,269 +1,235 @@
-"""Storage management for drop."""
+"""Page CRUD over ~/.drop/pages.json with UNIQUE(name) constraint.
+
+Persistent registry. Volatile runtime (pids, ports, tunnel URL) lives in
+drop.runtime (separate file). Migration from v1's flat schema is done
+once on first read.
+"""
 
 import json
 import os
+import shutil
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal
+
+from . import config
 
 
-class PageInfo(TypedDict):
-    source: str
-    is_dir: bool
-    password_hash: str  # Empty string if no password (static cookie-form)
-    created_at: str
-    description: str  # Optional description
-    name: str  # URL slug (human-readable name)
-    # App-specific fields (optional)
-    type: str  # "static" or "app"
-    run_cmd: str  # Command to run (for apps)
-    port: int  # App port (for apps)
-    pid: int  # Running process PID (for apps, 0 if not running)
-    tunnel_url: str  # Tunnel URL (empty if no tunnel)
-    tunnel_pid: int  # Tunnel process PID (0 if no tunnel)
-    # App basic auth (V2)
-    auth: dict | None  # {"scheme": "basic", "user": str, "password_hash": str} or None
-    public: bool  # True if user explicitly passed --public
-    proxy_pid: int  # Proxy process PID (0 if no proxy)
-    proxy_port: int  # Proxy listen port (0 if no proxy)
-    rewrite_host: bool  # If True, proxy rewrites http://localhost:<port> in text bodies
+def _drop_home() -> Path:
+    """Return DROP_HOME, re-reading env at call time so tests can override."""
+    return Path(os.environ.get("DROP_HOME") or Path.home() / ".drop")
 
 
-DROP_DIR = Path.home() / ".drop"
-PAGES_FILE = DROP_DIR / "pages.json"
-PID_FILE = DROP_DIR / "server.pid"
-PORT_FILE = DROP_DIR / "port"
-HOST_FILE = DROP_DIR / "host"
+def _pages_file() -> Path:
+    return _drop_home() / "pages.json"
 
 
-def ensure_dir() -> None:
-    """Ensure ~/.drop directory exists."""
-    DROP_DIR.mkdir(parents=True, exist_ok=True)
+def _runtime_file() -> Path:
+    return _drop_home() / "runtime.json"
 
 
-def load_pages() -> dict[str, PageInfo]:
-    """Load pages registry."""
-    if not PAGES_FILE.exists():
+@dataclass(frozen=True)
+class AuthConfig:
+    scheme: str
+    user: str
+    password_hash: str
+
+
+@dataclass
+class Page:
+    page_id: str
+    source: Path
+    type: Literal["static", "app"]
+    name: str = ""
+    description: str = ""
+    is_public: bool = False
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    # static-only
+    password_hash: str = ""
+    # app-only
+    run_cmd: str = ""
+    port: int = 0
+    auth: AuthConfig | None = None
+    allow_side_door: bool = False
+    rewrite_host: bool = False
+
+
+def _ensure_dir() -> None:
+    _drop_home().mkdir(parents=True, exist_ok=True)
+
+
+def _page_to_dict(p: Page) -> dict:
+    d = asdict(p)
+    d["source"] = str(p.source)
+    if p.auth is not None:
+        d["auth"] = asdict(p.auth)
+    return d
+
+
+def _page_from_dict(d: dict) -> Page:
+    auth_d = d.get("auth")
+    auth = AuthConfig(**auth_d) if auth_d else None
+    return Page(
+        page_id=d["page_id"],
+        source=Path(d["source"]),
+        type=d["type"],
+        name=d.get("name", ""),
+        description=d.get("description", ""),
+        is_public=d.get("is_public", False),
+        created_at=d.get("created_at", ""),
+        password_hash=d.get("password_hash", ""),
+        run_cmd=d.get("run_cmd", ""),
+        port=d.get("port", 0),
+        auth=auth,
+        allow_side_door=d.get("allow_side_door", False),
+        rewrite_host=d.get("rewrite_host", False),
+    )
+
+
+def load_pages() -> dict[str, Page]:
+    """Load registry. Runs migration on first call if file is v1 schema."""
+    maybe_migrate()
+    pages_file = _pages_file()
+    if not pages_file.exists():
         return {}
     try:
-        return json.loads(PAGES_FILE.read_text())
-    except Exception:
+        raw = json.loads(pages_file.read_text())
+    except (OSError, json.JSONDecodeError):
         return {}
+    if not isinstance(raw, dict) or "pages" not in raw:
+        return {}
+    return {pid: _page_from_dict({**d, "page_id": pid})
+            for pid, d in raw["pages"].items()}
 
 
-def save_pages(pages: dict[str, PageInfo]) -> None:
-    """Save pages registry."""
-    ensure_dir()
-    PAGES_FILE.write_text(json.dumps(pages, indent=2))
-
-
-def add_page(
-    page_id: str,
-    source: Path,
-    password_hash: str,
-    description: str = "",
-    name: str = "",
-    page_type: str = "static",
-    run_cmd: str = "",
-    port: int = 0,
-    auth: dict | None = None,
-    public: bool = False,
-    rewrite_host: bool = False,
-) -> None:
-    """Add a page to registry. Raises ValueError if `name` already exists."""
-    pages = load_pages()
-    if name:
-        for existing_id, existing in pages.items():
-            if existing.get("name") == name:
-                raise ValueError(
-                    f"name '{name}' already exists (page_id {existing_id[:8]}). "
-                    f"Use a different --name, or 'drop remove {name}' first."
-                )
-    pages[page_id] = {
-        "source": str(source.resolve()),
-        "is_dir": source.is_dir(),
-        "password_hash": password_hash,
-        "created_at": datetime.now(UTC).isoformat(),
-        "description": description,
-        "name": name,
-        "type": page_type,
-        "run_cmd": run_cmd,
-        "port": port,
-        "pid": 0,
-        "tunnel_url": "",
-        "tunnel_pid": 0,
-        "auth": auth,
-        "public": public,
-        "proxy_pid": 0,
-        "proxy_port": 0,
-        "rewrite_host": rewrite_host,
+def save_pages(pages: dict[str, Page]) -> None:
+    """Write registry."""
+    _ensure_dir()
+    envelope = {
+        "version": config.SCHEMA_VERSION,
+        "pages": {pid: _page_to_dict(p) for pid, p in pages.items()},
     }
+    # Remove `page_id` from inner dict — it's the key, not duplicated content
+    for pid, d in envelope["pages"].items():
+        d.pop("page_id", None)
+    _pages_file().write_text(json.dumps(envelope, indent=2))
+
+
+def add_page(page: Page) -> Page:
+    """Persist a Page. Raises ValueError on duplicate non-empty name."""
+    pages = load_pages()
+    if page.name:
+        for existing_id, existing in pages.items():
+            if existing.name == page.name:
+                raise ValueError(
+                    f"name '{page.name}' already exists (page_id {existing_id[:8]})"
+                )
+    pages[page.page_id] = page
     save_pages(pages)
+    return page
 
 
-def remove_page(page_id: str) -> bool:
-    """Remove a page from registry. Returns True if found."""
+def get_page(identifier: str) -> Page | None:
+    """Get by exact id, unique prefix, or name. None if missing/ambiguous."""
     pages = load_pages()
-    if page_id in pages:
-        del pages[page_id]
-        save_pages(pages)
-        return True
-    # Try partial match
-    matches = [k for k in pages if k.startswith(page_id)]
-    if len(matches) == 1:
-        del pages[matches[0]]
-        save_pages(pages)
-        return True
-    return False
-
-
-def get_page(page_id: str) -> PageInfo | None:
-    """Get page by ID or name (supports partial ID match)."""
-    pages = load_pages()
-    if page_id in pages:
-        return pages[page_id]
-    # Try partial ID match
-    matches = [k for k in pages if k.startswith(page_id)]
-    if len(matches) == 1:
-        return pages[matches[0]]
-    # Try name match
-    for pid, info in pages.items():
-        if info.get("name") == page_id:
-            return info
+    if identifier in pages:
+        return pages[identifier]
+    prefix_matches = [pid for pid in pages if pid.startswith(identifier)]
+    if len(prefix_matches) == 1:
+        return pages[prefix_matches[0]]
+    for p in pages.values():
+        if p.name == identifier:
+            return p
     return None
 
 
-def get_full_page_id(partial_id: str) -> str | None:
-    """Get full page ID from partial ID or name match."""
+def remove_page(identifier: str) -> bool:
+    """Remove by exact id, unique prefix, or name. Returns True if found."""
     pages = load_pages()
-    if partial_id in pages:
-        return partial_id
-    # Try partial ID match
-    matches = [k for k in pages if k.startswith(partial_id)]
-    if len(matches) == 1:
-        return matches[0]
-    # Try name match
-    for pid, info in pages.items():
-        if info.get("name") == partial_id:
-            return pid
-    return None
-
-
-def update_page_pid(page_id: str, pid: int) -> bool:
-    """Update running PID for an app. Returns True if found."""
-    pages = load_pages()
-    full_id = get_full_page_id(page_id)
-    if not full_id:
+    target = None
+    if identifier in pages:
+        target = identifier
+    else:
+        prefix_matches = [pid for pid in pages if pid.startswith(identifier)]
+        if len(prefix_matches) == 1:
+            target = prefix_matches[0]
+        else:
+            for pid, p in pages.items():
+                if p.name == identifier:
+                    target = pid
+                    break
+    if target is None:
         return False
-    pages[full_id]["pid"] = pid
+    del pages[target]
     save_pages(pages)
+    # Also clear runtime for the removed page
+    from . import runtime
+    runtime.clear_runtime(target)
     return True
 
 
-def update_page_tunnel(page_id: str, tunnel_url: str, tunnel_pid: int) -> bool:
-    """Update tunnel info for a page. Returns True if found."""
-    pages = load_pages()
-    full_id = get_full_page_id(page_id)
-    if not full_id:
-        return False
-    pages[full_id]["tunnel_url"] = tunnel_url
-    pages[full_id]["tunnel_pid"] = tunnel_pid
-    save_pages(pages)
-    return True
+def list_pages() -> dict[str, Page]:
+    """Alias for load_pages — explicit semantics for external callers."""
+    return load_pages()
 
 
-def update_page_proxy(page_id: str, proxy_pid: int, proxy_port: int) -> bool:
-    """Update proxy info for a page. Returns True if found."""
-    pages = load_pages()
-    full_id = get_full_page_id(page_id)
-    if not full_id:
-        return False
-    pages[full_id]["proxy_pid"] = proxy_pid
-    pages[full_id]["proxy_port"] = proxy_port
-    save_pages(pages)
-    return True
+# ---- Migration (v1 flat dict -> v2 versioned envelope) ----
+
+_RUNTIME_FIELDS_V1 = {"pid", "proxy_pid", "proxy_port", "tunnel_pid", "tunnel_url"}
 
 
-def clear_page_runtime(page_id: str) -> bool:
-    """Zero out all runtime fields (pid/tunnel/proxy). Returns True if found."""
-    pages = load_pages()
-    full_id = get_full_page_id(page_id)
-    if not full_id:
-        return False
-    pages[full_id]["pid"] = 0
-    pages[full_id]["tunnel_url"] = ""
-    pages[full_id]["tunnel_pid"] = 0
-    pages[full_id]["proxy_pid"] = 0
-    pages[full_id]["proxy_port"] = 0
-    save_pages(pages)
-    return True
-
-
-def get_app_status(page_id: str) -> str:
-    """Get app status: 'running', 'stopped', or 'crashed'."""
-    page = get_page(page_id)
-    if not page or page.get("type") != "app":
-        return "not_app"
-
-    pid = page.get("pid", 0)
-    if pid == 0:
-        return "stopped"
-
+def maybe_migrate() -> None:
+    """If pages.json is v1 (flat dict), back up and rewrite as v2."""
+    pages_file = _pages_file()
+    if not pages_file.exists():
+        return
     try:
-        os.kill(pid, 0)
-        return "running"
-    except OSError:
-        return "crashed"
+        raw = json.loads(pages_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if isinstance(raw, dict) and raw.get("version") == config.SCHEMA_VERSION:
+        return  # already migrated
+    if not isinstance(raw, dict):
+        return  # unrecognized; leave alone
 
+    # Backup
+    backup = pages_file.with_suffix(".json.v1.bak")
+    shutil.copy(pages_file, backup)
 
-# Server state
+    pages: dict[str, Page] = {}
+    runtimes_data: dict[str, dict] = {}
+    for pid, v1 in raw.items():
+        if not isinstance(v1, dict):
+            continue
+        # Carry runtime to runtime.json
+        runtimes_data[pid] = {
+            "page_id": pid,
+            "app_pid": v1.get("pid", 0),
+            "proxy_pid": v1.get("proxy_pid", 0),
+            "proxy_port": v1.get("proxy_port", 0),
+            "tunnel_pid": v1.get("tunnel_pid", 0),
+            "tunnel_url": v1.get("tunnel_url", ""),
+        }
+        # Strip runtime keys from page dict
+        page_dict = {k: v for k, v in v1.items() if k not in _RUNTIME_FIELDS_V1}
+        # v1 used "public" -> map to is_public
+        if "public" in page_dict:
+            page_dict["is_public"] = page_dict.pop("public")
+        page_dict.setdefault("page_id", pid)
+        page_dict.setdefault("type", "static")
+        try:
+            pages[pid] = _page_from_dict(page_dict)
+        except (KeyError, ValueError):
+            # Skip malformed entries
+            continue
 
-def save_pid(pid: int) -> None:
-    """Save server PID."""
-    ensure_dir()
-    PID_FILE.write_text(str(pid))
+    # Write v2
+    save_pages(pages)
 
-
-def load_pid() -> int | None:
-    """Load server PID."""
-    if not PID_FILE.exists():
-        return None
-    try:
-        return int(PID_FILE.read_text().strip())
-    except Exception:
-        return None
-
-
-def clear_pid() -> None:
-    """Clear server PID."""
-    if PID_FILE.exists():
-        PID_FILE.unlink()
-
-
-def save_port(port: int) -> None:
-    """Save server port."""
-    ensure_dir()
-    PORT_FILE.write_text(str(port))
-
-
-def load_port() -> int | None:
-    """Load server port."""
-    if not PORT_FILE.exists():
-        return None
-    try:
-        return int(PORT_FILE.read_text().strip())
-    except Exception:
-        return None
-
-
-def save_host(host: str) -> None:
-    """Save configured host."""
-    ensure_dir()
-    HOST_FILE.write_text(host)
-
-
-def load_host() -> str | None:
-    """Load configured host."""
-    if not HOST_FILE.exists():
-        return None
-    return HOST_FILE.read_text().strip() or None
+    # Write runtime file
+    _ensure_dir()
+    _runtime_file().write_text(json.dumps(
+        {"version": config.SCHEMA_VERSION, "runtimes": runtimes_data},
+        indent=2,
+    ))
