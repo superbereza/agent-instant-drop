@@ -172,3 +172,47 @@ def test_start_stop_app_public(drop_home, tmp_path, free_port):
     p = _drop("start", "ss-test", "--no-tunnel", drop_home=drop_home)
     assert "App started" in p.stdout or "started" in p.stdout.lower()
     _drop("stop", "ss-test", drop_home=drop_home)
+
+
+@pytest.mark.e2e
+def test_logs_missing_app_returns_error(drop_home):
+    p = _drop("logs", "nonexistent", drop_home=drop_home, expect_ok=False)
+    assert p.returncode != 0
+
+
+@pytest.mark.e2e
+def test_logs_no_log_file_yet(drop_home, tmp_path):
+    f = tmp_path / "x.py"; f.write_text("# stub")
+    _drop("add", str(f), "--run", "true", "--port", "9100",
+          "--name", "logsnone", "--public", drop_home=drop_home)
+    # App never started → no log file
+    p = _drop("logs", "logsnone", drop_home=drop_home, expect_ok=False)
+    assert "no app log" in (p.stderr + p.stdout).lower()
+
+
+@pytest.mark.e2e
+def test_logs_reads_existing_log(drop_home, tmp_path):
+    import json
+    import re
+    f = tmp_path / "x.py"; f.write_text("# stub")
+    _drop("add", str(f), "--run", "true", "--port", "9101",
+          "--name", "logshas", "--public", drop_home=drop_home)
+    # Manually create a log file
+    pages = subprocess.run(
+        [*DROP, "list", "-a"],
+        capture_output=True, text=True,
+        env={**os.environ, "DROP_HOME": str(drop_home)},
+    )
+    # find page_id from list output
+    m = re.search(r"\b([a-z0-9]{8,16})\b", pages.stdout)
+    assert m
+    page_id_short = m.group(1)
+    # We need full page_id — read from pages.json
+    raw = json.loads((drop_home / "pages.json").read_text())
+    full_id = next(pid for pid, p in raw["pages"].items() if p["name"] == "logshas")
+    log = drop_home / "logs" / f"{full_id}.app.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("hello from log\n")
+
+    p = _drop("logs", "logshas", drop_home=drop_home)
+    assert "hello from log" in p.stdout

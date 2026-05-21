@@ -260,6 +260,47 @@ def cmd_cleanup(args) -> int:
     return 0
 
 
+def cmd_logs(args) -> int:
+    page = storage.get_page(args.name)
+    if not page:
+        return _err(f"'{args.name}' not found")
+
+    # Determine which log to read
+    if args.proxy:
+        role = "proxy"
+    elif args.tunnel:
+        role = "tunnel"
+    else:
+        role = "app"
+
+    import os
+    home_env = os.environ.get("DROP_HOME")
+    base = Path(home_env) if home_env else Path.home() / ".drop"
+    log_file = base / "logs" / f"{page.page_id}.{role}.log"
+
+    if not log_file.exists():
+        return _err(f"no {role} log for '{args.name}' (file: {log_file})")
+
+    if args.follow:
+        # Tail -f equivalent
+        import time
+        with open(log_file, "r", errors="replace") as f:
+            f.seek(0, 2)  # end
+            try:
+                while True:
+                    line = f.readline()
+                    if line:
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                    else:
+                        time.sleep(0.2)
+            except KeyboardInterrupt:
+                return 0
+    else:
+        print(log_file.read_text(errors="replace"))
+        return 0
+
+
 def cmd_start(args) -> int:
     if args.name:
         page = storage.get_page(args.name)
@@ -352,6 +393,14 @@ def main() -> None:
 
     p_cleanup = sub.add_parser("cleanup", help="Remove entries with deleted sources")
     p_cleanup.set_defaults(func=cmd_cleanup)
+
+    p_logs = sub.add_parser("logs", help="Tail or print a page's log")
+    p_logs.add_argument("name")
+    p_logs.add_argument("--follow", "-f", action="store_true",
+                        help="Tail -f mode (follow new lines)")
+    p_logs.add_argument("--proxy", action="store_true", help="Show proxy log")
+    p_logs.add_argument("--tunnel", action="store_true", help="Show tunnel log")
+    p_logs.set_defaults(func=cmd_logs)
 
     args = parser.parse_args()
     sys.exit(args.func(args))
