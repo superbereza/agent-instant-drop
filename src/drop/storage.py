@@ -68,8 +68,15 @@ def add_page(
     auth: dict | None = None,
     public: bool = False,
 ) -> None:
-    """Add a page to registry."""
+    """Add a page to registry. Raises ValueError if `name` already exists."""
     pages = load_pages()
+    if name:
+        for existing_id, existing in pages.items():
+            if existing.get("name") == name:
+                raise ValueError(
+                    f"name '{name}' already exists (page_id {existing_id[:8]}). "
+                    f"Use a different --name, or 'drop remove {name}' first."
+                )
     pages[page_id] = {
         "source": str(source.resolve()),
         "is_dir": source.is_dir(),

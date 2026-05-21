@@ -641,18 +641,22 @@ def cmd_add(args: argparse.Namespace) -> int:
     name = args.name or ""
 
     # Add to storage
-    storage.add_page(
-        page_id,
-        source,
-        password_hash,
-        args.desc or "",
-        name,
-        page_type="app" if is_app else "static",
-        run_cmd=args.run or "",
-        port=args.port or 0,
-        auth=auth_block,
-        public=bool(args.public),
-    )
+    try:
+        storage.add_page(
+            page_id,
+            source,
+            password_hash,
+            args.desc or "",
+            name,
+            page_type="app" if is_app else "static",
+            run_cmd=args.run or "",
+            port=args.port or 0,
+            auth=auth_block,
+            public=bool(args.public),
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
     # Get URL
     server_port = storage.load_port() or 8080

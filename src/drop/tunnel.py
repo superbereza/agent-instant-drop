@@ -44,44 +44,60 @@ def start_tunnel(port: int) -> tuple[str, int] | None:
     """
     Start cloudflared tunnel for given port.
     Returns (url, pid) or None on failure.
+
+    cloudflared's stdout+stderr are redirected to a log file inside ~/.drop/.
+    Avoiding subprocess.PIPE matters for two reasons:
+      1. While CLI runs, an undrained PIPE fills the ~64KB kernel buffer and
+         blocks cloudflared's write() → tunnel freezes → CF error 1033/530.
+      2. After CLI exits, the PIPE's read end closes → cloudflared's next
+         write() raises SIGPIPE and kills the process.
+    Writing to a file FD that cloudflared owns has neither problem; the file
+    is also a useful log when diagnosing tunnel issues.
     """
     cloudflared = find_cloudflared()
     if not cloudflared:
         return None
 
-    # Start cloudflared with quick tunnel
+    LOG_DIR = Path.home() / ".drop" / "logs"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"cloudflared-{port}-{int(time.time())}.log"
+    log_fh = open(log_path, "w")
+
+    # start_new_session=True detaches cloudflared from CLI's process group so
+    # that SIGHUP on CLI exit does not kill the tunnel.
     proc = subprocess.Popen(
         [cloudflared, "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        stdout=log_fh,
+        stderr=log_fh,
+        start_new_session=True,
     )
+    # Parent's FD is no longer needed — cloudflared has its own dup of the
+    # underlying file. Closing here doesn't affect the child.
+    log_fh.close()
 
-    # Parse URL from stderr (cloudflared outputs URL there)
-    # Example: "Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):\nhttps://random-words.trycloudflare.com"
+    # Tail the log file for the trycloudflare.com URL.
     url = None
     start_time = time.time()
-    timeout = 30  # seconds
-
+    timeout = 30
+    pattern = re.compile(r'https://[a-z0-9-]+\.trycloudflare\.com')
     while time.time() - start_time < timeout:
         if proc.poll() is not None:
-            # Process exited
             return None
-
-        # Read stderr line by line
-        line = proc.stderr.readline()
-        if not line:
-            time.sleep(0.1)
-            continue
-
-        # Look for URL in output
-        match = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', line)
+        try:
+            content = log_path.read_text(errors="replace")
+        except OSError:
+            content = ""
+        match = pattern.search(content)
         if match:
             url = match.group(0)
             break
+        time.sleep(0.2)
 
     if not url:
-        proc.terminate()
+        try:
+            proc.terminate()
+        except OSError:
+            pass
         return None
 
     return (url, proc.pid)
