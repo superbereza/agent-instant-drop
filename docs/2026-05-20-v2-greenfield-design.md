@@ -115,6 +115,7 @@ class Page:
     port: int = 0
     auth: AuthConfig | None = None
     allow_side_door: bool = False     # explicit opt-in if app binds 0.0.0.0
+    rewrite_host: bool = False        # proxy rewrites http://localhost:<port> in text bodies
 
 
 # runtime.py — volatile, separate file
@@ -223,6 +224,42 @@ def start_tunnel(port: int, *, log_file: Path) -> tuple[str, int] | None:
     Returns (url, pid) or None.
     """
 ```
+
+### `--rewrite-host` flag (proxy.py, Phase 5)
+
+Many SPA bundles (Next.js, React + bundler, etc.) hardcode
+`http://localhost:<port>` strings in their built JS at compile time.
+When served through the cloudflared tunnel, that JS runs in the
+**viewer's** browser and tries to `fetch("http://localhost:N/...")` on
+the viewer's own machine — failing silently with CORS / network errors.
+
+V2 ships a built-in fix: when `--rewrite-host` is set at `drop add` time,
+the basic-auth proxy:
+
+1. Forces upstream `Accept-Encoding: identity` so the response body is
+   plaintext (no gzip to decode before searching).
+2. Substring-replaces `http://localhost:<app_port>` → tunnel origin
+   (derived from `X-Forwarded-Proto` + `X-Forwarded-Host` injected by
+   cloudflared; falls back to `Host` header).
+3. Strips `Content-Encoding` and `Content-Length` from the forwarded
+   response and resends the recomputed length.
+
+Only applied to `Content-Type` matching `text/html`, `text/javascript`,
+`application/javascript`, `text/css`. JSON is intentionally excluded
+(a legitimate string `"http://localhost:N"` in a payload should not be
+mutated). Binary responses (images, fonts) are untouched.
+
+CLI:
+```
+drop add ./bin --run "myapp --port 3008" --port 3008 --rewrite-host
+```
+
+Constraints:
+- Requires the proxy → conflicts with `--public`. Refused at `add` time.
+- The flag is stored on `Page` (decided at registration, not per run).
+
+Validated against a real Next.js-style app prior to V2 design — see
+the PoC at `/tmp/jeevy-rewriter.py` and the v1 hotfix on `main`.
 
 ### Side-door enforcement (lifecycle/app.py)
 
@@ -408,7 +445,7 @@ Each phase = its own spec → plan → execute under superpowers. Each phase end
 | 2 | Storage + Runtime: `storage.py`, `runtime.py` + v1→v2 migration | CRUD with UNIQUE constraint | unit + migration tests with real JSON |
 | 3 | Process helpers: `lifecycle/process.py` | spawn_managed, kill_pg, wait_alive, wait_port | unit + subprocess (sleep + check) |
 | 4 | Tunnel: `lifecycle/tunnel.py` with --logfile | tunnel start/stop, URL parsing | integration with real cloudflared (optional skip via env) |
-| 5 | Proxy: `proxy.py` (port from v1, no changes) | basic-auth + passthrough + SSRF guard + Upgrade reject | integration with fake upstream |
+| 5 | Proxy: `proxy.py` (port from v1) + `--rewrite-host` feature | basic-auth + passthrough + SSRF guard + Upgrade reject + substring rewrite | integration with fake upstream |
 | 6 | Lifecycle: `lifecycle/app.py` + `lifecycle/server.py` (atomic + rollback + side-door probe) | start/stop with all failure paths | integration with real subprocesses |
 | 7 | CLI: `cli.py` thin dispatch | All `drop <subcmd>` commands | E2E via `subprocess.run(["drop", ...])` |
 | 8 | Server: `server.py` polish (name in index, html escape, unified URL) | Flask routes | integration via Flask test client |
