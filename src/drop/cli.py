@@ -615,6 +615,14 @@ def cmd_add(args: argparse.Namespace) -> int:
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
+    # rewrite-host only makes sense when the proxy is active (i.e. with auth).
+    if getattr(args, 'rewrite_host', False):
+        if not is_app:
+            print("Error: --rewrite-host only applies to apps (use with --run)", file=sys.stderr)
+            return 1
+        if args.public:
+            print("Error: --rewrite-host requires the proxy (cannot combine with --public)", file=sys.stderr)
+            return 1
 
     # Directory requires manifest (for static only)
     if source.is_dir() and not is_app:
@@ -653,6 +661,7 @@ def cmd_add(args: argparse.Namespace) -> int:
             port=args.port or 0,
             auth=auth_block,
             public=bool(args.public),
+            rewrite_host=bool(getattr(args, 'rewrite_host', False)),
         )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -880,6 +889,12 @@ def main() -> None:
     p_add.add_argument(
         "--public", action="store_true",
         help="Explicit opt-out from default auth (page/app stays public)."
+    )
+    p_add.add_argument(
+        "--rewrite-host", action="store_true",
+        help="In proxy responses, rewrite http://localhost:<port> → tunnel "
+             "origin. Use for apps with hardcoded localhost URLs in their "
+             "client-side JS bundles. Apps only; requires --auth (uses proxy)."
     )
     p_add.set_defaults(func=cmd_add)
 

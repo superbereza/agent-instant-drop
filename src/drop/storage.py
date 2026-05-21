@@ -26,6 +26,7 @@ class PageInfo(TypedDict):
     public: bool  # True if user explicitly passed --public
     proxy_pid: int  # Proxy process PID (0 if no proxy)
     proxy_port: int  # Proxy listen port (0 if no proxy)
+    rewrite_host: bool  # If True, proxy rewrites http://localhost:<port> in text bodies
 
 
 DROP_DIR = Path.home() / ".drop"
@@ -67,6 +68,7 @@ def add_page(
     port: int = 0,
     auth: dict | None = None,
     public: bool = False,
+    rewrite_host: bool = False,
 ) -> None:
     """Add a page to registry. Raises ValueError if `name` already exists."""
     pages = load_pages()
@@ -94,6 +96,7 @@ def add_page(
         "public": public,
         "proxy_pid": 0,
         "proxy_port": 0,
+        "rewrite_host": rewrite_host,
     }
     save_pages(pages)
 

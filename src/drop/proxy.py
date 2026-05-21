@@ -21,10 +21,20 @@ from .utils import AUTH_REALM, verify_password
 # already sets Server/Date, and Connection/Transfer-Encoding are hop-by-hop.
 _HOP_BY_HOP_RESPONSE = frozenset({"transfer-encoding", "connection", "server", "date"})
 
+# Same as _HOP_BY_HOP_RESPONSE but also drops Content-Encoding and
+# Content-Length when we rewrite the body (we forced identity upstream and
+# the rewritten body has a new length).
+_HOP_BY_HOP_RESPONSE_REWRITE = _HOP_BY_HOP_RESPONSE | {"content-encoding", "content-length"}
+
 # Headers we never forward client→upstream — Host is set by urllib from the
 # upstream URL, Authorization is the proxy's own credentials, Content-Length
 # is recomputed by urllib, Connection is hop-by-hop.
 _HOP_BY_HOP_REQUEST = frozenset({"host", "authorization", "content-length", "connection"})
+
+# Content-Types we apply substring rewrite to. Anything binary/streaming is
+# skipped (would corrupt). JSON intentionally NOT included: a legitimate
+# string value of "http://localhost:N" in a payload would get mutated.
+_REWRITE_TYPES = ("text/html", "text/javascript", "application/javascript", "text/css")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -45,6 +55,8 @@ _opener = urllib.request.build_opener(_NoRedirect)
 class ProxyHandler(BaseHTTPRequestHandler):
     APP_PORT: int
     AUTH: dict  # {"scheme": "basic", "user": str, "password_hash": str}
+    REWRITE_HOST: bool = False
+    REWRITE_NEEDLE: bytes = b""  # computed from APP_PORT at startup
 
     def _check_auth(self) -> bool:
         header = self.headers.get("Authorization", "")
@@ -100,6 +112,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         for h, v in self.headers.items():
             if h.lower() not in _HOP_BY_HOP_REQUEST:
                 req.add_header(h, v)
+        # If we plan to rewrite the body, force upstream to send uncompressed
+        # so the needle is actually present.
+        if self.REWRITE_HOST:
+            req.add_header("Accept-Encoding", "identity")
 
         try:
             with _opener.open(req, timeout=30) as resp:
@@ -112,11 +128,32 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(f"proxy error: {e}\n".encode())
 
+    def _request_origin(self) -> bytes:
+        """Return the public origin (scheme://host) the client used.
+
+        cloudflared injects X-Forwarded-Proto and X-Forwarded-Host. Fall back
+        to the Host header (and assume https since --auth flow requires
+        a tunnel; otherwise rewrite is probably not running)."""
+        proto = self.headers.get("X-Forwarded-Proto", "https")
+        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "localhost"
+        return f"{proto}://{host}".encode("utf-8")
+
     def _forward_response(self, status: int, headers, body: bytes) -> None:
+        rewrite = False
+        if self.REWRITE_HOST and body:
+            ctype = (headers.get("Content-Type") or "").lower()
+            if any(ctype.startswith(t) for t in _REWRITE_TYPES) and self.REWRITE_NEEDLE in body:
+                body = body.replace(self.REWRITE_NEEDLE, self._request_origin())
+                rewrite = True
+
         self.send_response(status)
+        skip = _HOP_BY_HOP_RESPONSE_REWRITE if rewrite else _HOP_BY_HOP_RESPONSE
         for h, v in headers.items():
-            if h.lower() not in _HOP_BY_HOP_RESPONSE:
+            if h.lower() not in skip:
                 self.send_header(h, v)
+        if rewrite:
+            # We changed body length and stripped Content-Encoding; set new length.
+            self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
@@ -147,6 +184,8 @@ def main() -> None:
 
     ProxyHandler.APP_PORT = args.app_port
     ProxyHandler.AUTH = page["auth"]
+    ProxyHandler.REWRITE_HOST = bool(page.get("rewrite_host"))
+    ProxyHandler.REWRITE_NEEDLE = f"http://localhost:{args.app_port}".encode("utf-8")
 
     server = ThreadingHTTPServer((args.bind, args.proxy_port), ProxyHandler)
     try:
