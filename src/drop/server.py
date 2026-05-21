@@ -154,5 +154,8 @@ def auth_page(page_id: str, filepath: str):
 
 # ---- Entry point used by lifecycle/server.py ----
 
-def run_server(port: int = 8080, host: str = "0.0.0.0") -> None:
+def run_server(port: int | None = None, host: str = "0.0.0.0") -> None:
+    import os
+    if port is None:
+        port = int(os.environ.get("DROP_PORT", "8080"))
     app.run(host=host, port=port, debug=False, use_reloader=False)

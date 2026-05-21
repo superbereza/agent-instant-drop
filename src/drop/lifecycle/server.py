@@ -9,6 +9,7 @@ Two paths:
 
 import os
 import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -60,17 +61,24 @@ def start_server(*, port: int, host: str, no_tunnel: bool) -> StartResult:
             _clear_pid()
 
     if has_systemd():
-        # systemd path: write env file, restart unit
         env_file = Path(os.environ.get("DROP_HOME") or Path.home() / ".drop") / "systemd.env"
         env_file.parent.mkdir(parents=True, exist_ok=True)
         env_file.write_text(f"DROP_PORT={port}\n")
-        # We don't actually shell out to systemctl in tests — only PID path
-        # is exercised. systemctl call left as a TODO for Phase 10 when
-        # install.sh is updated.
-        return StartResult(
-            error="systemd path not yet wired (Phase 10)",
-            hint="Run with --no-systemd or use the PID fallback.",
-        )
+        # Restart the unit (or start if not running) so it picks up new env
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "restart", "drop.service"],
+                check=True, capture_output=True, timeout=5,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                FileNotFoundError) as e:
+            return StartResult(error=f"systemctl failed: {e}",
+                               hint="Run install.sh or use --no-systemd fallback.")
+        # Wait for port
+        if not utils.wait_for_port("127.0.0.1", port, timeout=10):
+            return StartResult(error=f"server did not bind {port} after systemd restart")
+        return StartResult(url=f"http://{host}:{port}/",
+                            warnings=["systemd-managed (auto-restart on failure)"])
 
     # PID fallback path
     log_file = (Path(os.environ.get("DROP_HOME") or Path.home() / ".drop")
@@ -104,7 +112,16 @@ def start_server(*, port: int, host: str, no_tunnel: bool) -> StartResult:
 
 
 def stop_server() -> None:
-    """Stop the drop static server (PID fallback path)."""
+    """Stop the drop static server."""
+    if has_systemd():
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "stop", "drop.service"],
+                check=False, capture_output=True, timeout=5,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        return
     pid = _load_pid()
     if pid > 0:
         try:

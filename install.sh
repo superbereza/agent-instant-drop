@@ -50,8 +50,9 @@ After=network.target
 
 [Service]
 Type=simple
+EnvironmentFile=-%h/.drop/systemd.env
 ExecStart=$VENV_DIR/bin/python -c "from drop.server import run_server; run_server()"
-Restart=always
+Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 
