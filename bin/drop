@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# drop — self-bootstrapping launcher for Agent Instant Drop.
+#
+# Resolves its own repo (even via a symlink or from a plugin dir), creates the
+# venv + editable install on first run, then execs the real `drop` entry point.
+# Works the same standalone (`./install.sh`) or as a plugin (`/plugin install`).
+#
+# Note: tunnel features also need `cloudflared`. install.sh fetches it; otherwise
+# `drop` will tell you when a tunnel command needs it.
+
+set -euo pipefail
+
+# --- resolve the real location of this script (portable, no `readlink -f`) ---
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+    dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    [[ "$src" != /* ]] && src="$dir/$src"
+done
+ROOT=$(cd -P "$(dirname "$src")/.." && pwd)
+
+VENV="$ROOT/.venv"
+
+# --- bootstrap venv + editable install on first run (lazy) -----------------
+if [ ! -x "$VENV/bin/drop" ]; then
+    command -v python3 >/dev/null 2>&1 || {
+        echo "drop: python3 not found — install Python 3.10+" >&2; exit 1; }
+    echo "drop: first run — setting up venv at $VENV ..." >&2
+    if command -v uv >/dev/null 2>&1; then
+        uv venv "$VENV" >/dev/null
+        uv pip install --quiet --python "$VENV/bin/python" -e "$ROOT"
+    else
+        python3 -m venv "$VENV"
+        "$VENV/bin/pip" install --quiet --upgrade pip
+        "$VENV/bin/pip" install --quiet -e "$ROOT"
+    fi
+fi
+
+exec "$VENV/bin/drop" "$@"

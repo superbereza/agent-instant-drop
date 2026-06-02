@@ -1,0 +1,6 @@
+{
+  "name": "drop",
+  "description": "Securely share any file, folder, or running app with a password-protected HTTPS link — built for AI agents.",
+  "version": "0.3.0",
+  "contextFileName": "GEMINI.md"
+}

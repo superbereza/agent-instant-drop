@@ -2,7 +2,13 @@
 
 Drop any file, app, or prototype to your human. **Password-protected by default.**
 
+Ships an agent **skill** at [`skills/drop/SKILL.md`](skills/drop/SKILL.md), wired up for **Claude Code, Cursor, Codex and Gemini** from one source (see below).
+
 ## Install
+
+Three ways — pick one. All end with the same `drop` CLI and `drop` skill; the `.venv/` builds on first run.
+
+### 1. Standalone (clone + symlinks)
 
 ```bash
 git clone https://github.com/superbereza/agent-instant-drop
@@ -10,7 +16,27 @@ cd agent-instant-drop
 ./install.sh
 ```
 
-Creates isolated venv and symlinks `drop` to `~/.local/bin/`. Installs `cloudflared` to `~/.drop/bin/` (used for HTTPS tunnels).
+Symlinks `bin/drop` → `~/.local/bin/drop` and the skill → `~/.claude/skills/drop`, and installs `cloudflared` to `~/.drop/bin/` (used for HTTPS tunnels).
+
+### 2. As a Claude Code plugin (this repo is its own marketplace)
+
+```text
+/plugin marketplace add superbereza/agent-instant-drop
+/plugin install drop@agent-instant-drop
+```
+
+Claude pulls the repo and loads `skills/drop/SKILL.md`; the first `drop …` call builds the venv (the skill calls the bundled `${CLAUDE_PLUGIN_ROOT}/bin/drop`). Tunnel features still need `cloudflared` — run `./install.sh` once or place it on PATH.
+
+### 3. From an aggregate marketplace
+
+```text
+/plugin marketplace add superbereza/superbereza-skills
+/plugin install drop@superbereza-skills
+```
+
+### Other agents
+
+The same `skills/` directory is exposed to **Cursor** (`.cursor-plugin/`), **Codex** (`.codex-plugin/`) and **Gemini** (`gemini-extension.json` → [`GEMINI.md`](GEMINI.md)). One skill, one source — see [`AGENTS.md`](AGENTS.md).
 
 ## Quick Start
 

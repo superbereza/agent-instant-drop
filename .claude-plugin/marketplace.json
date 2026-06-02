@@ -1,0 +1,15 @@
+{
+  "name": "agent-instant-drop",
+  "description": "Self-marketplace for the drop plugin (share files/apps over a password-protected link)",
+  "owner": {
+    "name": "superbereza"
+  },
+  "plugins": [
+    {
+      "name": "drop",
+      "description": "Securely share any file, folder, or running app via a password-protected HTTPS link — CLI + agent skill",
+      "version": "0.3.0",
+      "source": "./"
+    }
+  ]
+}

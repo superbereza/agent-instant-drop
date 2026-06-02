@@ -25,9 +25,11 @@ echo "Installing package..."
 # Create ~/.local/bin if needed
 mkdir -p "$LOCAL_BIN"
 
-# Symlink drop command
+# Symlink the self-bootstrapping launcher (not the venv entry point directly),
+# so the same `drop` works even if the venv is rebuilt or used as a plugin.
+chmod +x "$SCRIPT_DIR/bin/drop"
 echo "Creating command symlink in $LOCAL_BIN..."
-ln -sf "$VENV_DIR/bin/drop" "$LOCAL_BIN/drop"
+ln -sf "$SCRIPT_DIR/bin/drop" "$LOCAL_BIN/drop"
 echo "  ✓ drop"
 
 # Create skill in .claude/skills/ structure
@@ -35,7 +37,7 @@ SKILL_DIR="$SKILLS_ROOT/.claude/skills/drop"
 mkdir -p "$SKILL_DIR"
 
 echo "Creating skill in $SKILL_DIR..."
-ln -sf "$SCRIPT_DIR/skills/drop.md" "$SKILL_DIR/SKILL.md"
+ln -sf "$SCRIPT_DIR/skills/drop/SKILL.md" "$SKILL_DIR/SKILL.md"
 echo "  ✓ drop"
 
 # Systemd integration (Linux only)

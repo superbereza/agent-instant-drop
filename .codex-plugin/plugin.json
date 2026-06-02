@@ -1,0 +1,19 @@
+{
+  "name": "drop",
+  "version": "0.3.0",
+  "description": "Securely share any file, folder, or running app with a password-protected HTTPS link — built for AI agents.",
+  "author": {
+    "name": "superbereza",
+    "url": "https://github.com/superbereza"
+  },
+  "homepage": "https://github.com/superbereza/agent-instant-drop",
+  "repository": "https://github.com/superbereza/agent-instant-drop",
+  "keywords": [
+    "file-sharing",
+    "cloudflare-tunnel",
+    "cli",
+    "ai-agents",
+    "skills"
+  ],
+  "skills": "./skills/"
+}
