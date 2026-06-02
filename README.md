@@ -64,11 +64,11 @@ drop stop                                               # Stop server
 - Per-page rate limiting on static-page password attempts (3/min/IP/page)
 - Single source of truth for subprocess spawning (no PIPE-buffer hangs)
 - Atomic app lifecycle: any phase failure rolls back prior phases
-- v1 → v2 schema migration runs automatically on first start
+- Automatic migration from the legacy storage format on first start
 
 ## For Humans
 
-See [docs/README-human.md](docs/README-human.md) for detailed documentation (v1 reference; v2 keeps the same CLI surface).
+See [docs/README-human.md](docs/README-human.md) for detailed documentation.
 
 ## License
 

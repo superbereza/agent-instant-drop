@@ -349,6 +349,12 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+    try:
+        from importlib.metadata import version as _pkg_version
+        _ver = _pkg_version("agent-instant-drop")
+    except Exception:
+        _ver = "unknown"
+    parser.add_argument("--version", action="version", version=f"%(prog)s {_ver}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_start = sub.add_parser("start", help="Start server or app")
