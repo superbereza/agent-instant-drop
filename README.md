@@ -66,18 +66,6 @@ drop stop                                               # Stop server
 - Atomic app lifecycle: any phase failure rolls back prior phases
 - v1 → v2 schema migration runs automatically on first start
 
-## What's Different in v2
-
-v2 is a full rewrite focused on correctness and maintainability:
-
-- **No more "tunnel dies after 30s"** — cloudflared uses `--logfile`, no PIPE buffer.
-- **No more silent dup names** — UNIQUE constraint on registered names.
-- **No more side-door** — `--auth` apps that bind `0.0.0.0` on a public IP are refused (override via `--allow-side-door`).
-- **Atomic lifecycle** — app+proxy+tunnel start as a unit; any failure rolls back.
-- **Tested** — 160+ unit/integration/e2e tests; pytest CI on every push.
-
-See `docs/2026-05-20-v2-greenfield-design.md` for the full architecture.
-
 ## For Humans
 
 See [docs/README-human.md](docs/README-human.md) for detailed documentation (v1 reference; v2 keeps the same CLI surface).
