@@ -73,3 +73,7 @@ See [docs/README-human.md](docs/README-human.md) for detailed documentation.
 ## License
 
 MIT
+
+## OpenCode
+
+This skill also supports [OpenCode](https://opencode.ai) — see [`.opencode/INSTALL.md`](.opencode/INSTALL.md).
