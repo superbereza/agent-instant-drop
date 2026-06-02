@@ -7,6 +7,8 @@ description: Drop files, apps, or prototypes to your human via drop CLI
 
 Drop any file, app, or prototype to your human. **Password-protected by default.** Use `--public` to opt out.
 
+> **Invoking `drop`:** use `drop` if it's on your PATH (it is after `install.sh`). If it isn't — e.g. when this skill was pulled in as a plugin — run the bundled launcher instead: `${CLAUDE_PLUGIN_ROOT}/bin/drop` (or `./bin/drop` from the repo). It builds its own venv on first run, so there's no separate setup step. Everything below works the same either way — substitute that path for `drop`.
+
 ## Quick Start
 
 ```bash
