@@ -34,3 +34,9 @@ drop stop                               # stop the server
 
 Default is **password-protected**; pass `--public` to opt out. Read the skill for
 the full command set, options, and output details.
+## Maintainer note
+
+Changing a skill or its payload? It reaches installed plugins **only after a release** —
+`scripts/bump.sh <v>` → commit → tag `vX.Y.Z` → GitHub release → `/plugin update`. A commit on
+`main` alone propagates nothing (Claude/Codex cache plugins by version string). Full rule and the
+MAJOR/MINOR/PATCH guidance: the `skill-builder` skill, §7.
