@@ -1,15 +1,13 @@
 #!/bin/bash
 # Agent Instant Drop - Install Script
-# Creates isolated venv and installs skill
+# Sets up the `drop` CLI: venv, ~/.local/bin symlink, cloudflared, systemd (Linux).
+# The skill itself comes from the plugin/marketplace, not this script.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/.venv"
 LOCAL_BIN="$HOME/.local/bin"
-
-# Default skills location - user home directory
-SKILLS_ROOT="${DROP_SKILLS_ROOT:-$HOME}"
 
 echo "Installing Agent Instant Drop..."
 
@@ -32,13 +30,8 @@ echo "Creating command symlink in $LOCAL_BIN..."
 ln -sf "$SCRIPT_DIR/bin/drop" "$LOCAL_BIN/drop"
 echo "  ✓ drop"
 
-# Create skill in .claude/skills/ structure
-SKILL_DIR="$SKILLS_ROOT/.claude/skills/drop"
-mkdir -p "$SKILL_DIR"
-
-echo "Creating skill in $SKILL_DIR..."
-ln -sf "$SCRIPT_DIR/skills/drop/SKILL.md" "$SKILL_DIR/SKILL.md"
-echo "  ✓ drop"
+# Note: the skill itself is delivered by the plugin/marketplace (or your agent's
+# manifest), so this installer does NOT symlink it.
 
 # Systemd integration (Linux only)
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -95,9 +88,7 @@ echo "  drop start              # Start server"
 echo "  drop add ./file.html    # Publish file"
 echo "  drop stop               # Stop server"
 echo ""
-echo "Skill available for all projects under: $SKILLS_ROOT"
-echo ""
-echo "To change skill location, set DROP_SKILLS_ROOT before install:"
-echo "  DROP_SKILLS_ROOT=/path/to/projects ./install.sh"
+echo "The skill comes from the plugin/marketplace; this installer set up the"
+echo "'drop' CLI, its venv, cloudflared, and (on Linux) the systemd service."
 echo ""
 echo "To uninstall: ./scripts/uninstall.sh"

@@ -12,10 +12,8 @@ The same capability is wired up for several coding agents from one source:
 
 ## Invoking the CLI
 
-`drop` is on PATH after `./install.sh`. Otherwise call `./bin/drop` from this repo
-(or `${CLAUDE_PLUGIN_ROOT}/bin/drop` when loaded as a plugin). The launcher builds
-its own venv on first run — no setup step. Tunnels also need `cloudflared`
-(install.sh fetches it to `~/.drop/bin/`).
+Call `drop` directly. The launcher builds its own venv on first run — no setup step.
+Tunnels also need `cloudflared` (the standalone `install.sh` fetches it to `~/.drop/bin/`).
 
 ## Cheat sheet
 

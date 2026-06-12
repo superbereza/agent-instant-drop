@@ -6,9 +6,25 @@ Ships an agent **skill** at [`skills/drop/SKILL.md`](skills/drop/SKILL.md), wire
 
 ## Install
 
-Three ways — pick one. All end with the same `drop` CLI and `drop` skill; the `.venv/` builds on first run.
+Install the skill via the plugin (option 1 or 2). For HTTPS tunnels the `drop` server needs `cloudflared`, so run the standalone setup (option 3) once to install the CLI, its venv, `cloudflared`, and (on Linux) a systemd service. The `.venv/` builds on first run either way.
 
-### 1. Standalone (clone + symlinks)
+### 1. As a Claude Code plugin (this repo is its own marketplace)
+
+```text
+/plugin marketplace add superbereza/agent-instant-drop
+/plugin install drop@agent-instant-drop
+```
+
+Claude loads `skills/drop/SKILL.md`; the first `drop …` call builds the venv. Tunnel features need `cloudflared` — run option 3 once.
+
+### 2. From an aggregate marketplace
+
+```text
+/plugin marketplace add superbereza/superbereza-skills
+/plugin install drop@superbereza-skills
+```
+
+### 3. The `drop` CLI + tunnel setup (standalone)
 
 ```bash
 git clone https://github.com/superbereza/agent-instant-drop
@@ -16,23 +32,7 @@ cd agent-instant-drop
 ./install.sh
 ```
 
-Symlinks `bin/drop` → `~/.local/bin/drop` and the skill → `~/.claude/skills/drop`, and installs `cloudflared` to `~/.drop/bin/` (used for HTTPS tunnels).
-
-### 2. As a Claude Code plugin (this repo is its own marketplace)
-
-```text
-/plugin marketplace add superbereza/agent-instant-drop
-/plugin install drop@agent-instant-drop
-```
-
-Claude pulls the repo and loads `skills/drop/SKILL.md`; the first `drop …` call builds the venv (the skill calls the bundled `${CLAUDE_PLUGIN_ROOT}/bin/drop`). Tunnel features still need `cloudflared` — run `./install.sh` once or place it on PATH.
-
-### 3. From an aggregate marketplace
-
-```text
-/plugin marketplace add superbereza/superbereza-skills
-/plugin install drop@superbereza-skills
-```
+Symlinks `bin/drop` → `~/.local/bin/drop`, builds the venv, installs `cloudflared` to `~/.drop/bin/`, and (on Linux) sets up a systemd service. The skill comes from the plugin (option 1/2), so this no longer symlinks it.
 
 ### Other agents
 
