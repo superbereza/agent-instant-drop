@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# drop-install-env — set up the runtime `drop` needs for HTTPS tunnels.
+# Agent-callable (bare command when installed as a plugin; bin/ is on PATH). Idempotent.
+#
+# It creates, under the user's STABLE home (~/.drop, NOT the plugin cache):
+#   - ~/.drop/venv         a daemon venv with the package installed non-editable, so the
+#                          long-running server does NOT depend on the version-pinned plugin
+#                          cache path (which changes on every plugin update)
+#   - ~/.drop/bin/cloudflared   the tunnel binary
+#   - (Linux) a systemd user service whose ExecStart uses %h/.drop/venv — stable across updates
+#
+# The interactive `drop` CLI bootstraps its OWN lazy venv separately; this script is only
+# for the persistent tunnel server. Tear it all down with drop-uninstall-env.
+set -euo pipefail
+
+# --- resolve this script's repo root (portable; works via symlink / plugin bin on PATH) ---
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+    dir=$(cd -P "$(dirname "$src")" && pwd); src=$(readlink "$src")
+    [[ "$src" != /* ]] && src="$dir/$src"
+done
+ROOT=$(cd -P "$(dirname "$src")/.." && pwd)
+
+DROP_HOME="$HOME/.drop"
+VENV="$DROP_HOME/venv"
+mkdir -p "$DROP_HOME/bin"
+
+# 1. Stable daemon venv — NON-editable install so it doesn't reference the plugin cache path.
+echo "drop-install-env: daemon venv at $VENV ..."
+command -v python3 >/dev/null 2>&1 || { echo "  python3 not found — install Python 3.10+" >&2; exit 1; }
+if command -v uv >/dev/null 2>&1; then
+    uv venv "$VENV" >/dev/null
+    uv pip install --quiet --python "$VENV/bin/python" "$ROOT"
+else
+    [ -x "$VENV/bin/python" ] || python3 -m venv "$VENV"
+    "$VENV/bin/pip" install --quiet --upgrade pip
+    "$VENV/bin/pip" install --quiet "$ROOT"
+fi
+echo "  ✓ venv"
+
+# 2. cloudflared (HTTPS tunnels)
+CF="$DROP_HOME/bin/cloudflared"
+if command -v cloudflared >/dev/null 2>&1; then
+    echo "  ✓ cloudflared (already on PATH)"
+elif [ -x "$CF" ]; then
+    echo "  ✓ cloudflared (already at $CF)"
+else
+    echo "drop-install-env: fetching cloudflared ..."
+    case "$(uname -m)" in
+        x86_64)        CF_ARCH=amd64 ;;
+        aarch64|arm64) CF_ARCH=arm64 ;;
+        armv7l)        CF_ARCH=arm ;;
+        *)             CF_ARCH=amd64 ;;
+    esac
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${OS}-${CF_ARCH}" -o "$CF"
+    chmod +x "$CF"
+    echo "  ✓ cloudflared → $CF"
+fi
+
+# 3. systemd user service (Linux) — ExecStart uses %h (the user's home), never a cache path.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    UNIT_DIR="$HOME/.config/systemd/user"
+    mkdir -p "$UNIT_DIR"
+    cat > "$UNIT_DIR/drop.service" <<'EOF'
+[Unit]
+Description=Agent Instant Drop
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.drop/systemd.env
+ExecStart=%h/.drop/venv/bin/python -c "from drop.server import run_server; run_server()"
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+    echo "  ✓ systemd unit drop.service (ExecStart → %h/.drop/venv — stable across plugin updates)"
+fi
+
+echo "drop-install-env: done. Tunnel runtime ready."

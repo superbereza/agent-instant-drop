@@ -13,7 +13,9 @@ The same capability is wired up for several coding agents from one source:
 ## Invoking the CLI
 
 Call `drop` directly. The launcher builds its own venv on first run — no setup step.
-Tunnels also need `cloudflared` (the standalone `install.sh` fetches it to `~/.drop/bin/`).
+Tunnels also need `cloudflared` (+ a systemd service on Linux): run `drop-install-env`
+once (it sets them up under the stable `~/.drop/`, surviving plugin updates);
+`drop-uninstall-env` tears it all down (service, cloudflared, venvs).
 
 ## Cheat sheet
 

@@ -115,6 +115,11 @@ basic-auth credentials transmitted over plain HTTP travel in base64 (cleartext).
 
 drop uses cloudflared quick-tunnels to give your app an HTTPS URL.
 
+> **One-time setup:** tunnels need `cloudflared` (and, on Linux, a background systemd
+> service). Run **`drop-install-env`** once to install them into `~/.drop/` (a stable
+> location that survives plugin updates). `drop` will also tell you when a tunnel command
+> needs it. Tear it all down — service, cloudflared, venvs — with **`drop-uninstall-env`**.
+
 - Behind NAT: tunnel auto-starts.
 - Apps with `--auth`: tunnel always attempted (HTTPS termination for basic auth).
 - cloudflared logs land in `~/.drop/logs/<page_id>.tunnel.log` — no PIPE-buffer hangs (v1 bug fixed).

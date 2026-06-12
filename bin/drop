@@ -3,10 +3,10 @@
 #
 # Resolves its own repo (even via a symlink or from a plugin dir), creates the
 # venv + editable install on first run, then execs the real `drop` entry point.
-# Works the same standalone (`./install.sh`) or as a plugin (`/plugin install`).
+# Works the same as a plugin (`/plugin install`) or from a clone.
 #
-# Note: tunnel features also need `cloudflared`. install.sh fetches it; otherwise
-# `drop` will tell you when a tunnel command needs it.
+# Note: tunnel features also need `cloudflared` (+ a systemd service on Linux). Run
+# `drop-install-env` once to set those up; `drop` tells you when a tunnel needs it.
 
 set -euo pipefail
 

@@ -2,7 +2,7 @@
   "name": "drop",
   "displayName": "Agent Instant Drop",
   "description": "Securely share any file, folder, or running app with a password-protected HTTPS link — built for AI agents.",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "author": {
     "name": "superbereza"
   },

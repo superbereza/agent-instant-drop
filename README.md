@@ -6,7 +6,7 @@ Ships an agent **skill** at [`skills/drop/SKILL.md`](skills/drop/SKILL.md), wire
 
 ## Install
 
-Install the skill via the plugin (option 1 or 2). For HTTPS tunnels the `drop` server needs `cloudflared`, so run the standalone setup (option 3) once to install the CLI, its venv, `cloudflared`, and (on Linux) a systemd service. The `.venv/` builds on first run either way.
+Install via the plugin. The `drop` launcher builds its own venv on first run. For HTTPS tunnels, run **`drop-install-env`** once (it installs `cloudflared` and, on Linux, a background systemd service into the stable `~/.drop/`); **`drop-uninstall-env`** tears that down.
 
 ### 1. As a Claude Code plugin (this repo is its own marketplace)
 
@@ -15,7 +15,7 @@ Install the skill via the plugin (option 1 or 2). For HTTPS tunnels the `drop` s
 /plugin install drop@agent-instant-drop
 ```
 
-Claude loads `skills/drop/SKILL.md`; the first `drop …` call builds the venv. Tunnel features need `cloudflared` — run option 3 once.
+Claude loads `skills/drop/SKILL.md`; the first `drop …` call builds the venv. For tunnels, run `drop-install-env` once.
 
 ### 2. From an aggregate marketplace
 
@@ -24,15 +24,9 @@ Claude loads `skills/drop/SKILL.md`; the first `drop …` call builds the venv. 
 /plugin install drop@superbereza-skills
 ```
 
-### 3. The `drop` CLI + tunnel setup (standalone)
+### Tunnel runtime (cloudflared + systemd)
 
-```bash
-git clone https://github.com/superbereza/agent-instant-drop
-cd agent-instant-drop
-./install.sh
-```
-
-Symlinks `bin/drop` → `~/.local/bin/drop`, builds the venv, installs `cloudflared` to `~/.drop/bin/`, and (on Linux) sets up a systemd service. The skill comes from the plugin (option 1/2), so this no longer symlinks it.
+`drop-install-env` and `drop-uninstall-env` (bundled in `bin/`, on PATH while the plugin is enabled) set up / tear down the tunnel runtime under `~/.drop/` — a stable location, so the systemd daemon keeps working across plugin updates.
 
 ### Other agents
 

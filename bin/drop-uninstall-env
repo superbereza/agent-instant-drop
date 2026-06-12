@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# drop-uninstall-env — tear down everything drop-install-env set up.
+# Agent-callable (bare command when installed as a plugin). Idempotent.
+#
+# Stops the server, removes the systemd service, cloudflared, and BOTH venvs
+# (the stable daemon venv ~/.drop/venv and the launcher's in-repo .venv).
+# Your published-pages config (~/.drop/*.json) is kept — remove ~/.drop yourself to wipe it.
+set -euo pipefail
+
+# --- resolve repo root (portable) ---
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+    dir=$(cd -P "$(dirname "$src")" && pwd); src=$(readlink "$src")
+    [[ "$src" != /* ]] && src="$dir/$src"
+done
+ROOT=$(cd -P "$(dirname "$src")/.." && pwd)
+
+DROP_HOME="$HOME/.drop"
+
+# stop a running server, if any
+if [ -f "$DROP_HOME/server.pid" ]; then
+    pid=$(cat "$DROP_HOME/server.pid" 2>/dev/null || true)
+    [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null && { echo "Stopping server (pid $pid) ..."; kill "$pid" 2>/dev/null || true; }
+    rm -f "$DROP_HOME/server.pid"
+fi
+
+# systemd (Linux)
+if [[ "$(uname -s)" == "Linux" ]]; then
+    systemctl --user is-active   drop.service &>/dev/null && systemctl --user stop    drop.service || true
+    systemctl --user is-enabled  drop.service &>/dev/null && systemctl --user disable drop.service || true
+    UNIT="$HOME/.config/systemd/user/drop.service"
+    [ -f "$UNIT" ] && { rm -f "$UNIT"; systemctl --user daemon-reload; echo "  ✓ removed systemd unit"; }
+fi
+
+# cloudflared
+[ -e "$DROP_HOME/bin/cloudflared" ] && { rm -f "$DROP_HOME/bin/cloudflared"; echo "  ✓ removed cloudflared"; }
+
+# venvs — daemon (stable) and launcher (in-repo)
+[ -d "$DROP_HOME/venv" ] && { rm -rf "$DROP_HOME/venv"; echo "  ✓ removed daemon venv ($DROP_HOME/venv)"; }
+[ -d "$ROOT/.venv" ]     && { rm -rf "$ROOT/.venv";     echo "  ✓ removed launcher venv ($ROOT/.venv)"; }
+
+echo "drop-uninstall-env: done. (Kept $DROP_HOME config — 'rm -rf $DROP_HOME' to wipe it.)"
