@@ -75,7 +75,8 @@ def save_runtimes(rtmap: dict[str, PageRuntime]) -> None:
         "version": config.SCHEMA_VERSION,
         "runtimes": {pid: asdict(r) for pid, r in rtmap.items()},
     }
-    _runtime_file().write_text(json.dumps(envelope, indent=2))
+    from . import utils
+    utils.atomic_write_text(_runtime_file(), json.dumps(envelope, indent=2))
 
 
 def get_runtime(page_id: str) -> PageRuntime:

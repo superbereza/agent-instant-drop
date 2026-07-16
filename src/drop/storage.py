@@ -113,7 +113,8 @@ def save_pages(pages: dict[str, Page]) -> None:
     # Remove `page_id` from inner dict — it's the key, not duplicated content
     for pid, d in envelope["pages"].items():
         d.pop("page_id", None)
-    _pages_file().write_text(json.dumps(envelope, indent=2))
+    from . import utils
+    utils.atomic_write_text(_pages_file(), json.dumps(envelope, indent=2))
 
 
 def add_page(page: Page) -> Page:

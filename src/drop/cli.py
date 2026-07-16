@@ -160,6 +160,8 @@ def cmd_add(args) -> int:
             return _err("--rewrite-host only applies to apps")
         if args.public:
             return _err("--rewrite-host requires the proxy (cannot combine with --public)")
+    if getattr(args, 'allow_side_door', False) and not is_app:
+        return _err("--allow-side-door only applies to apps (use with --run)")
 
     # Directory requires manifest (for static only)
     if source.is_dir() and not is_app:
@@ -219,6 +221,7 @@ def cmd_add(args) -> int:
         run_cmd=args.run or "",
         port=args.port or 0,
         auth=auth_block,
+        allow_side_door=bool(getattr(args, 'allow_side_door', False)),
         rewrite_host=bool(getattr(args, 'rewrite_host', False)),
     )
     try:
@@ -266,7 +269,15 @@ def cmd_list(args) -> int:
         return 0
     cwd = Path.cwd().resolve()
     static_base, _shareable = _static_base_url()
-    host = utils.detect_ip()
+    _host_cache: list[str] = []
+
+    def _host() -> str:
+        # Lazy: detect_ip() hits the network (~2s). Only pay it when an app row
+        # actually needs a fallback URL, so `drop list` stays fast/offline-safe.
+        if not _host_cache:
+            _host_cache.append(utils.detect_ip())
+        return _host_cache[0]
+
     for pid, page in pages.items():
         if not args.all:
             try:
@@ -284,7 +295,7 @@ def cmd_list(args) -> int:
             else:
                 status = "[stopped]"
             auth_tag = " [auth]" if page.auth else ""
-            url = rt.tunnel_url or f"http://{host}:{page.port}/"
+            url = rt.tunnel_url or f"http://{_host()}:{page.port}/"
             lock = "" if page.auth else " (public)"
             print(f"{pid[:8]}  [app] {status}{auth_tag}  {url}{lock}")
         else:
@@ -473,6 +484,9 @@ def main() -> None:
                        help="Explicit opt-out from default auth.")
     p_add.add_argument("--rewrite-host", action="store_true",
                        help="Proxy rewrites http://localhost:<port> in text bodies.")
+    p_add.add_argument("--allow-side-door", action="store_true",
+                       help="Apps only: start even if the app binds a public "
+                            "interface (auth then protects the tunnel only).")
     p_add.add_argument("--base-url",
                        help="Override the printed base URL (e.g. your tunnel/tailnet URL).")
     p_add.set_defaults(func=cmd_add)

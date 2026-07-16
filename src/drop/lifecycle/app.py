@@ -162,7 +162,7 @@ def start_app(page: storage.Page, *, auth_insecure: bool, no_tunnel: bool) -> St
                 runtime.clear_runtime(page.page_id)
                 return StartResult(
                     error="cloudflared not installed",
-                    hint="Install via ./install.sh or pass --auth-insecure to allow cleartext.",
+                    hint="Run drop-install-env, or pass --auth-insecure to allow cleartext.",
                 )
             # Non-auth + NAT but no cloudflared: degrade gracefully
             warnings.append("behind NAT but cloudflared not found")
