@@ -99,19 +99,28 @@ def start_app(page: storage.Page, *, auth_insecure: bool, no_tunnel: bool) -> St
     rt.app_pid = app_proc.pid
     runtime.save_runtime(rt)
 
-    # Side-door enforcement (only meaningful with auth)
+    # Side-door enforcement (only meaningful with auth). Prefer inspecting the
+    # kernel's actual listening sockets (reliable, no network round-trip); fall
+    # back to probing the detected external IP only when we can't introspect
+    # (e.g. no /proc). The old probe-only path missed LAN binds and gave a
+    # false pass on NAT hosts that can't connect to their own public IP.
     if page.auth and not page.allow_side_door:
-        external_host = utils.detect_ip()
-        if external_host and external_host != "127.0.0.1":
-            if _probe_side_door(external_host, page.port):
-                proc.kill_pg(app_proc.pid)
-                runtime.clear_runtime(page.page_id)
-                return StartResult(
-                    error=f"app listens on 0.0.0.0:{page.port}; --auth would not protect "
-                          f"the direct path (side-door)",
-                    hint="Bind app to 127.0.0.1, or `drop add ... --allow-side-door` "
-                         "to override.",
-                )
+        exposed = utils.app_binds_non_loopback(page.port)
+        if exposed is None:
+            external_host = utils.detect_ip()
+            exposed = bool(
+                external_host and external_host != "127.0.0.1"
+                and _probe_side_door(external_host, page.port)
+            )
+        if exposed:
+            proc.kill_pg(app_proc.pid)
+            runtime.clear_runtime(page.page_id)
+            return StartResult(
+                error=f"app listens on a non-loopback address (port {page.port}); "
+                      f"--auth would not protect the direct path (side-door)",
+                hint="Bind app to 127.0.0.1, or `drop add ... --allow-side-door` "
+                     "to override.",
+            )
 
     if page.auth:
         warnings.append(_SIDE_DOOR_WARNING)

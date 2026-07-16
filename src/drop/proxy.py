@@ -16,8 +16,8 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import storage
-from .auth import parse_basic_auth, verify_password
+from . import config, storage
+from .auth import RateLimiter, parse_basic_auth, verify_password
 from .config import AUTH_REALM
 
 
@@ -57,6 +57,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
     AUTH: dict  # {"scheme": "basic", "user": str, "password_hash": str}
     REWRITE_HOST: bool = False
     REWRITE_NEEDLE: bytes = b""
+    # Throttle failed basic-auth attempts (per client IP). Credentials are
+    # high-entropy, but this stops unbounded online guessing all the same.
+    _LIMITER = RateLimiter(max_attempts=config.RL_PER_IP_MAX, window_sec=config.RL_WINDOW_SEC)
 
     def _check_auth(self) -> bool:
         creds = parse_basic_auth(self.headers.get("Authorization", ""))
@@ -98,6 +101,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Bad request: path must be absolute.\n")
             return
         if not self._check_auth():
+            # Count only genuine failed attempts (creds supplied but wrong), so
+            # the credential-less first request browsers send doesn't burn the
+            # budget.
+            had_creds = self.headers.get("Authorization", "").startswith("Basic ")
+            client_ip = self.client_address[0] if self.client_address else "0.0.0.0"
+            if had_creds and not self._LIMITER.check_and_record(client_ip, "proxy"):
+                self.send_response(429)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"Too many attempts; try again in a minute.\n")
+                return
             self.send_response(401)
             self.send_header("WWW-Authenticate", f'Basic realm="{AUTH_REALM}"')
             self.send_header("Content-Type", "text/plain")

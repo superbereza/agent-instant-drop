@@ -205,3 +205,27 @@ def test_302_redirect_passes_through(proxy_running, fake_upstream):
                                     headers={"Authorization": _basic_auth_header("drop", pw)})
     assert status == 302
     assert headers.get("location") == "https://example.com/x"
+
+
+# Brute-force throttling (O4)
+
+@pytest.mark.integration
+def test_proxy_rate_limits_failed_auth(proxy_running):
+    # Fresh proxy subprocess → fresh limiter. Wrong creds should start
+    # returning 429 once the per-IP cap is hit.
+    proxy_port, _, _ = proxy_running
+    bad = _basic_auth_header("drop", "definitely-wrong")
+    codes = [
+        _http_get("127.0.0.1", proxy_port, "/", {"Authorization": bad})[0]
+        for _ in range(8)
+    ]
+    assert 429 in codes, f"expected a 429 among {codes}"
+
+
+@pytest.mark.integration
+def test_proxy_no_creds_not_locked_out(proxy_running):
+    # Requests with NO credentials are not counted, so they always get the
+    # 401 challenge (never 429) — a browser's first hit must not be throttled.
+    proxy_port, _, _ = proxy_running
+    codes = [_http_get("127.0.0.1", proxy_port, "/")[0] for _ in range(8)]
+    assert set(codes) == {401}, f"expected all 401, got {codes}"
