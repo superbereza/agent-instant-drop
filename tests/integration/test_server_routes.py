@@ -26,6 +26,54 @@ def test_index_lists_no_pages_when_empty(client):
     assert b"<a href=\"/p/" not in r.data
 
 
+def test_xff_spoof_does_not_bypass_rate_limit(client, drop_home, tmp_path):
+    # Regression: the rate limiter must key on the real TCP peer, never on the
+    # client-controlled X-Forwarded-For header (which used to reset the bucket).
+    server._ip_limiter._attempts.clear()
+    server._global_limiter._attempts.clear()
+    src = tmp_path / "s.html"
+    src.write_text("secret")
+    storage.add_page(storage.Page(
+        page_id="rlpage", source=src, type="static",
+        password_hash=auth.hash_password("pw"),
+    ))
+    codes = []
+    for i in range(8):
+        r = client.post("/p/rlpage/", data={"password": "wrong"},
+                        headers={"X-Forwarded-For": f"10.0.0.{i}"})
+        codes.append(r.status_code)
+    # Rotating XFF must not grant unlimited tries — the cap still triggers 429.
+    assert 429 in codes
+
+
+def _enable_index(drop_home, password="idxpw") -> str:
+    """Configure the dashboard password and return the auth cookie value."""
+    h = auth.hash_password(password)
+    (Path(drop_home) / "index.hash").write_text(h)
+    return h
+
+
+def test_index_disabled_without_password(client, drop_home, tmp_path):
+    src = tmp_path / "report.html"
+    src.write_text("<h1>x</h1>")
+    storage.add_page(storage.Page(
+        page_id="abc123longid", source=src, type="static",
+        name="my-report", is_public=True,
+    ))
+    r = client.get("/")
+    # No index password → enumeration disabled, no page links leaked
+    assert r.status_code == 200
+    assert b"<a href=\"/p/" not in r.data
+    assert b"disabled" in r.data.lower()
+
+
+def test_index_requires_password_when_set(client, drop_home, tmp_path):
+    _enable_index(drop_home)
+    r = client.get("/")
+    assert r.status_code == 401
+    assert r.headers.get("Cache-Control") == "no-store"
+
+
 def test_index_shows_name_not_page_id(client, drop_home, tmp_path):
     src = tmp_path / "report.html"
     src.write_text("<h1>x</h1>")
@@ -36,6 +84,8 @@ def test_index_shows_name_not_page_id(client, drop_home, tmp_path):
         name="my-report",
         is_public=True,
     ))
+    cookie = _enable_index(drop_home)
+    client.set_cookie("drop_index_auth", cookie)
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode()
@@ -56,6 +106,8 @@ def test_index_escapes_user_content(client, drop_home, tmp_path):
         description="desc <img src=x onerror=alert(1)>",
         is_public=True,
     ))
+    cookie = _enable_index(drop_home)
+    client.set_cookie("drop_index_auth", cookie)
     r = client.get("/")
     body = r.data.decode()
     # No raw <script>
@@ -95,8 +147,10 @@ def test_serve_with_auth_requires_password(client, drop_home, tmp_path):
         password_hash=auth.hash_password("pw"),
     ))
     r = client.get("/p/secret1/")
-    # No cookie → show login form (200 with form)
-    assert r.status_code in (200, 401)
+    # No cookie → 401 with login form (not 200: must not read as "healthy"
+    # to monitors, and must not be cached in place of content)
+    assert r.status_code == 401
+    assert r.headers.get("Cache-Control") == "no-store"
     assert b"password" in r.data.lower() or b"Password" in r.data
 
 

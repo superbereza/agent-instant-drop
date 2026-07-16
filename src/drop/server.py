@@ -13,6 +13,7 @@ All user-influenced HTML is escaped via html.escape.
 
 import html
 import mimetypes
+import os
 from datetime import datetime, UTC, timedelta
 from pathlib import Path
 
@@ -24,7 +25,46 @@ from .manifest import load_manifest, safe_path
 
 
 app = Flask(__name__)
-_rate_limiter = RateLimiter(max_attempts=3, window_sec=60)
+
+# Two limiters guard every password endpoint:
+#   _ip_limiter     — per (remote_addr, page): stops a single host hammering.
+#   _global_limiter — per page regardless of IP: the real brute-force cap. It
+#                     matters because all tunnel/tailscale traffic arrives as
+#                     127.0.0.1, and because the source IP must never be taken
+#                     from a client-controlled header (X-Forwarded-For spoofing).
+_ip_limiter = RateLimiter(max_attempts=config.RL_PER_IP_MAX, window_sec=config.RL_WINDOW_SEC)
+_global_limiter = RateLimiter(max_attempts=config.RL_GLOBAL_MAX, window_sec=config.RL_WINDOW_SEC)
+
+
+def _client_ip() -> str:
+    """Real TCP peer address. Never trust X-Forwarded-For here — it is fully
+    client-controlled and was previously the rate-limit bypass."""
+    return request.remote_addr or "0.0.0.0"
+
+
+def _rate_ok(ip: str, page_key: str) -> bool:
+    """True if this attempt is within both the global and per-IP limits."""
+    if not _global_limiter.check_and_record("*", page_key):
+        return False
+    if not _ip_limiter.check_and_record(ip, page_key):
+        return False
+    return True
+
+
+def _index_hash_file() -> Path:
+    base = Path(os.environ.get("DROP_HOME") or Path.home() / ".drop")
+    return base / "index.hash"
+
+
+def _read_index_hash() -> str:
+    """Hash of the index (dashboard) password, or '' if none configured."""
+    f = _index_hash_file()
+    if not f.exists():
+        return ""
+    try:
+        return f.read_text().strip()
+    except OSError:
+        return ""
 
 
 # ---- Index ----
@@ -42,6 +82,22 @@ _INDEX_TEMPLATE = """\
 
 @app.route("/")
 def index():
+    index_hash = _read_index_hash()
+    if not index_hash:
+        # No dashboard password configured → never enumerate published pages.
+        # (Enumeration leaked every page's name + description to anyone with the
+        # server URL.) Set one with `drop index-password` to enable the listing.
+        resp = make_response(_INDEX_TEMPLATE.format(
+            listing="<p>Index disabled. Run <code>drop index-password</code> "
+                    "to enable the dashboard.</p>"), 200)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    if request.cookies.get("drop_index_auth") != index_hash:
+        resp = make_response(_login_form(), 401)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
     pages = storage.list_pages()
     if not pages:
         listing = "<p>No pages published.</p>"
@@ -56,7 +112,27 @@ def index():
                 f" — {html.escape(desc)}</li>"
             )
         listing = "<ul>" + "".join(items) + "</ul>"
-    return _INDEX_TEMPLATE.format(listing=listing)
+    resp = make_response(_INDEX_TEMPLATE.format(listing=listing), 200)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/", methods=["POST"])
+def auth_index():
+    index_hash = _read_index_hash()
+    if not index_hash:
+        abort(404)
+    if not _rate_ok(_client_ip(), "__index__"):
+        return make_response(_login_form("Too many attempts; try again in a minute."), 429)
+    if not verify_password(request.form.get("password", ""), index_hash):
+        resp = make_response(_login_form("Invalid password"), 401)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    resp = make_response("", 303)
+    resp.headers["Location"] = "/"
+    resp.set_cookie("drop_index_auth", index_hash, max_age=15 * 60,
+                    httponly=True, samesite="Lax")
+    return resp
 
 
 # ---- Page serving ----
@@ -102,7 +178,13 @@ def serve_page(page_id: str, filepath: str):
     if page.password_hash:
         cookie = request.cookies.get(cookie_name)
         if cookie != page.password_hash:
-            return make_response(_login_form(), 200)
+            # 401, not 200: an unauthenticated GET must not look "healthy" to
+            # uptime monitors / CDNs, and the password form must never be
+            # cached in place of the real content. No WWW-Authenticate header
+            # (the gate is cookie-based, not HTTP Basic).
+            resp = make_response(_login_form(), 401)
+            resp.headers["Cache-Control"] = "no-store"
+            return resp
 
     # Resolve content
     if page.source.is_dir():
@@ -130,8 +212,7 @@ def auth_page(page_id: str, filepath: str):
     if page is None or page.type != "static":
         abort(404)
 
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "0.0.0.0")
-    if not _rate_limiter.check_and_record(ip, page_id):
+    if not _rate_ok(_client_ip(), page_id):
         return make_response(_login_form("Too many attempts; try again in a minute."), 429)
 
     password = request.form.get("password", "")
@@ -154,8 +235,14 @@ def auth_page(page_id: str, filepath: str):
 
 # ---- Entry point used by lifecycle/server.py ----
 
-def run_server(port: int | None = None, host: str = "0.0.0.0") -> None:
+def run_server(port: int | None = None, host: str | None = None) -> None:
     import os
     if port is None:
         port = int(os.environ.get("DROP_PORT", "8080"))
+    if host is None:
+        # Bind loopback by default: access is via tailscale-serve / cloudflared,
+        # both of which connect over 127.0.0.1. Binding 0.0.0.0 would put the
+        # server directly on the public internet. Override with DROP_HOST if
+        # you truly need a wider bind.
+        host = os.environ.get("DROP_HOST", "127.0.0.1")
     app.run(host=host, port=port, debug=False, use_reloader=False)

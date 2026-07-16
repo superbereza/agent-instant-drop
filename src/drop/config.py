@@ -26,3 +26,11 @@ DEFAULT_SERVER_PORT = 8080
 AUTH_REALM = "drop"
 DEFAULT_AUTH_USER = "drop"
 SCHEMA_VERSION = 2
+
+# Default length of auto-generated static-page passwords (~57 bits at length 10).
+STATIC_PASSWORD_LENGTH = 10
+
+# Password-attempt rate limits (used by server.py).
+RL_PER_IP_MAX = 5        # attempts per (remote_addr, page) per window
+RL_GLOBAL_MAX = 30       # attempts per page per window, regardless of source IP
+RL_WINDOW_SEC = 60
