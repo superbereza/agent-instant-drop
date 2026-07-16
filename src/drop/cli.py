@@ -256,6 +256,13 @@ def cmd_add(args) -> int:
 
 
 def cmd_remove(args) -> int:
+    matches = storage.matching_page_ids(args.id)
+    if len(matches) > 1:
+        return _err(
+            f"'{args.id}' is ambiguous — matches {len(matches)} pages",
+            hint="Use a longer prefix or the full id: "
+                 + ", ".join(m[:8] for m in matches),
+        )
     if storage.remove_page(args.id):
         print(f"Removed: {args.id}")
         return 0
@@ -289,7 +296,12 @@ def cmd_list(args) -> int:
         # Status indicator for apps
         if page.type == "app":
             if rt.is_app_alive():
-                status = "[running]"
+                broken = []
+                if page.auth and rt.proxy_pid > 0 and not rt.is_proxy_alive():
+                    broken.append("proxy")
+                if rt.tunnel_pid > 0 and not rt.is_tunnel_alive():
+                    broken.append("tunnel")
+                status = f"[degraded: {'+'.join(broken)} down]" if broken else "[running]"
             elif rt.app_pid > 0:
                 status = "[crashed]"
             else:

@@ -2,6 +2,7 @@
 page-id generation.
 """
 
+import ipaddress
 import os
 import platform
 import secrets
@@ -16,6 +17,68 @@ import urllib.request
 from pathlib import Path
 
 from . import config
+
+
+def _hex_to_ip(h: str) -> str | None:
+    """Decode a /proc/net/tcp{,6} local-address hex field to an IP string."""
+    try:
+        if len(h) == 8:  # IPv4, stored little-endian
+            return str(ipaddress.IPv4Address(bytes(reversed(bytes.fromhex(h)))))
+        if len(h) == 32:  # IPv6, four little-endian 32-bit words
+            out = bytearray()
+            for i in range(0, 32, 8):
+                out += bytes(reversed(bytes.fromhex(h[i:i + 8])))
+            return str(ipaddress.IPv6Address(bytes(out)))
+    except (ValueError, ipaddress.AddressValueError):
+        return None
+    return None
+
+
+def _listening_ips(port: int) -> set[str] | None:
+    """Local IPs with a LISTEN socket on `port`, via /proc/net/tcp{,6}.
+
+    Returns None when the tables can't be read (e.g. macOS), so callers can
+    fall back to a network probe.
+    """
+    found: set[str] = set()
+    read_any = False
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(path).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        read_any = True
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4 or parts[3] != "0A":  # 0A == TCP_LISTEN
+                continue
+            addr_hex, _, port_hex = parts[1].rpartition(":")
+            try:
+                if int(port_hex, 16) != port:
+                    continue
+            except ValueError:
+                continue
+            ip = _hex_to_ip(addr_hex)
+            if ip:
+                found.add(ip)
+    return found if read_any else None
+
+
+def app_binds_non_loopback(port: int) -> bool | None:
+    """True if anything listens on `port` on a non-loopback address.
+
+    0.0.0.0 / :: (wildcard) and any concrete LAN/public IP count as exposed;
+    only 127.0.0.0/8 and ::1 are safe. Returns None if it can't introspect
+    (caller should fall back to a network probe).
+    """
+    ips = _listening_ips(port)
+    if ips is None:
+        return None
+    for ip in ips:
+        addr = ipaddress.ip_address(ip)
+        if addr.is_unspecified or not addr.is_loopback:
+            return True
+    return False
 
 
 def atomic_write_text(path: Path, text: str) -> None:

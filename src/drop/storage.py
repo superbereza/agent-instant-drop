@@ -145,6 +145,21 @@ def get_page(identifier: str) -> Page | None:
     return None
 
 
+def matching_page_ids(identifier: str) -> list[str]:
+    """All page_ids an identifier could refer to (exact id > prefix > name).
+
+    Lets callers tell 'ambiguous' apart from 'not found' (get_page collapses
+    both to None).
+    """
+    pages = load_pages()
+    if identifier in pages:
+        return [identifier]
+    prefix_matches = [pid for pid in pages if pid.startswith(identifier)]
+    if prefix_matches:
+        return prefix_matches
+    return [pid for pid, p in pages.items() if p.name == identifier]
+
+
 def remove_page(identifier: str) -> bool:
     """Remove by exact id, unique prefix, or name. Returns True if found."""
     pages = load_pages()

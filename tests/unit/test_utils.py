@@ -131,3 +131,45 @@ def test_get_external_ip_returns_str_or_none():
 @pytest.mark.integration
 def test_is_behind_nat_returns_bool():
     assert isinstance(utils.is_behind_nat(), bool)
+
+
+# Side-door detection (O1) — inspecting real listening sockets.
+
+def test_hex_to_ip_ipv4():
+    assert utils._hex_to_ip("0100007F") == "127.0.0.1"   # little-endian 127.0.0.1
+    assert utils._hex_to_ip("00000000") == "0.0.0.0"
+    assert utils._hex_to_ip("0101A8C0") == "192.168.1.1"
+
+
+def test_hex_to_ip_ipv6_loopback():
+    assert utils._hex_to_ip("00000000000000000000000001000000") == "::1"
+
+
+@pytest.mark.skipif(not __import__("pathlib").Path("/proc/net/tcp").exists(),
+                    reason="needs /proc/net/tcp (Linux)")
+def test_app_binds_non_loopback_detects_bind():
+    import socket as _s
+    # loopback bind → not a side door
+    lo = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    lo.setsockopt(_s.SOL_SOCKET, _s.SO_REUSEADDR, 1)
+    lo.bind(("127.0.0.1", 0)); lo.listen()
+    lo_port = lo.getsockname()[1]
+    try:
+        assert utils.app_binds_non_loopback(lo_port) is False
+    finally:
+        lo.close()
+    # wildcard bind → side door
+    wide = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    wide.setsockopt(_s.SOL_SOCKET, _s.SO_REUSEADDR, 1)
+    wide.bind(("0.0.0.0", 0)); wide.listen()
+    wide_port = wide.getsockname()[1]
+    try:
+        assert utils.app_binds_non_loopback(wide_port) is True
+    finally:
+        wide.close()
+
+
+def test_app_binds_non_loopback_free_port_is_false():
+    # Nothing listening → not exposed (on Linux; None elsewhere, which is fine).
+    port = utils.allocate_free_port()
+    assert utils.app_binds_non_loopback(port) in (False, None)
