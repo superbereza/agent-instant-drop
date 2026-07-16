@@ -28,6 +28,10 @@ def test_is_env_file_blocks_dot_env_production():
     assert manifest.is_env_file(".env.production") is True
 
 
+def test_is_env_file_blocks_dot_envrc():
+    assert manifest.is_env_file(".envrc") is True
+
+
 def test_is_env_file_allows_dot_env_example():
     assert manifest.is_env_file(".env.example") is False
 
@@ -76,6 +80,19 @@ def test_matches_manifest_exact_file():
 def test_matches_manifest_glob_extension():
     assert manifest.matches_manifest("a.html", ["*.html"]) is True
     assert manifest.matches_manifest("a.css", ["*.html"]) is False
+
+
+def test_matches_manifest_single_glob_does_not_cross_slash():
+    # Security: `*.html` must match only top-level files, never nested ones,
+    # so it can't silently publish private/secret.html.
+    assert manifest.matches_manifest("private/secret.html", ["*.html"]) is False
+    assert manifest.matches_manifest("assets/sub/x.css", ["assets/*.css"]) is False
+    assert manifest.matches_manifest("assets/x.css", ["assets/*.css"]) is True
+
+
+def test_matches_manifest_bare_double_star_matches_all():
+    assert manifest.matches_manifest("index.html", ["**"]) is True
+    assert manifest.matches_manifest("deep/nested/file.js", ["**"]) is True
 
 
 def test_matches_manifest_double_star_directory():

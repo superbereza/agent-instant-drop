@@ -68,6 +68,7 @@ drop stop api
 | `drop logs <name> [--proxy|--tunnel] [-f]` | Tail a per-page log |
 | `drop remove <id|name>` | Remove a registered page |
 | `drop cleanup` | Remove entries whose source file no longer exists |
+| `drop index-password [PASS]` | Set/clear the dashboard (`/`) password (`--clear` disables it) |
 
 ## Flags for `drop add`
 
@@ -79,6 +80,8 @@ drop stop api
 - `--port <N>` — app port (required with `--run`)
 - `--auth basic[:user:pass]` — explicit basic auth for apps (default: auto-gen `drop:<12char>`)
 - `--rewrite-host` — proxy rewrites `http://localhost:<port>` in text bodies (for SPAs that hardcode it)
+- `--allow-side-door` — apps only: start even if the app binds a public interface (auth then protects the tunnel only, not the direct app port)
+- `--base-url <url>` — override the printed base URL (e.g. your tunnel/tailnet URL) when auto-detection can't reach it
 
 ## Flags for `drop start`
 
@@ -89,7 +92,9 @@ drop stop api
 
 ## Auth model
 
-**Static pages** use a cookie-form login. Submit password → cookie set (15 min, httponly) → content served. Rate limit: 3 attempts/min/IP/page.
+**Static pages** use a cookie-form login. Submit password → cookie set (15 min, httponly) → content served. Auto-generated passwords are 10 chars. Rate limit: 5 attempts/min per source IP, plus a global cap of 30/min per page (the source IP is the real TCP peer, never a client-supplied `X-Forwarded-For`).
+
+**Dashboard (`/`)** does not list your pages unless you set a dashboard password with `drop index-password`. Without one, `/` refuses to enumerate; with one, it prompts for that password (same cookie-form login) before showing the listing.
 
 **Apps** sit behind a thin reverse proxy that does HTTP basic auth. Proxy:
 - Validates path starts with `/` (SSRF guard)
@@ -136,9 +141,9 @@ EOF
 drop add ./project/
 ```
 
-Manifest patterns: exact files, `*.html` globs, `dir/**` recursive directories.
+Manifest patterns: exact files (`index.html`), single-segment globs (`*.html` matches top-level `.html` **only** — it does not cross `/`, so it won't publish `private/x.html`), directory prefixes (`assets` / `assets/`), and recursive globs (`assets/**`, or bare `**` for everything).
 
-`.env` files are always blocked, even if in the manifest (except `.env.example`).
+`.env`, `.env.*`, and `.envrc` files are always blocked, even if in the manifest (except `.env.example`).
 
 ## Tips
 

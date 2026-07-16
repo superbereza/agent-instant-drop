@@ -96,7 +96,7 @@ def start_server(*, port: int, host: str, no_tunnel: bool) -> StartResult:
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
                 FileNotFoundError) as e:
             return StartResult(error=f"systemctl failed: {e}",
-                               hint="Run install.sh or use --no-systemd fallback.")
+                               hint="Run drop-install-env to (re)create the drop.service unit.")
         # Wait for port
         if not utils.wait_for_port("127.0.0.1", port, timeout=10):
             return StartResult(error=f"server did not bind {port} after systemd restart")
