@@ -5,13 +5,80 @@ This file translates user input into Page/StartResult and prints output.
 """
 
 import argparse
+import json
+import os
 import sys
 from pathlib import Path
 
 from . import config, runtime, storage, utils
 from .auth import (generate_auth_creds, generate_password, hash_password)
 from .lifecycle import app as app_lifecycle, server as server_lifecycle
+from .lifecycle.tunnel import _URL_PATTERN
 from .manifest import MANIFEST_FILE, load_manifest
+
+
+def _drop_base() -> Path:
+    return Path(os.environ.get("DROP_HOME") or Path.home() / ".drop")
+
+
+def _static_base_url(explicit: str | None = None) -> tuple[str, bool]:
+    """Resolve the static server's public base URL.
+
+    Returns (base_url, shareable). `shareable` is False when we could only
+    determine a loopback address (server is reachable but not from outside —
+    the caller should tell the user to use their tunnel/tailnet).
+
+    Priority: explicit override → tunnel.json (from `drop start`) →
+    host/port files → systemd.env DROP_PORT + static.tunnel.log →
+    detect_ip()+DEFAULT_SERVER_PORT (last-resort guess).
+    """
+    if explicit:
+        return (explicit.rstrip("/"), True)
+    base = _drop_base()
+
+    tunnel_json = base / "tunnel.json"
+    if tunnel_json.exists():
+        try:
+            url = json.loads(tunnel_json.read_text()).get("url", "").strip()
+            if url:
+                return (url.rstrip("/"), True)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # systemd deployment (drop-install-env) never runs `drop start`, so the
+    # real port lives in systemd.env and the tunnel URL in the tunnel log.
+    tunnel_log = base / "logs" / "static.tunnel.log"
+    if tunnel_log.exists():
+        try:
+            m = _URL_PATTERN.search(tunnel_log.read_text(errors="replace"))
+            if m:
+                return (m.group(0).rstrip("/"), True)
+        except OSError:
+            pass
+
+    host_f, port_f = base / "host", base / "port"
+    if host_f.exists() and port_f.exists():
+        try:
+            host = host_f.read_text().strip()
+            port = port_f.read_text().strip()
+            if host and port:
+                shareable = host not in ("127.0.0.1", "localhost")
+                return (f"http://{host}:{port}", shareable)
+        except OSError:
+            pass
+
+    env_file = base / "systemd.env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text().splitlines():
+                if line.startswith("DROP_PORT="):
+                    port = line.split("=", 1)[1].strip()
+                    if port:
+                        return (f"http://127.0.0.1:{port}", False)
+        except OSError:
+            pass
+
+    return (f"http://{utils.detect_ip()}:{config.DEFAULT_SERVER_PORT}", False)
 
 
 __doc__ = """\
@@ -132,11 +199,12 @@ def cmd_add(args) -> int:
         if args.public:
             pass
         elif args.password is not None:
-            raw_pw = args.password if args.password is not True else generate_password()
+            raw_pw = (args.password if args.password is not True
+                      else generate_password(config.STATIC_PASSWORD_LENGTH))
             plaintext_pw = raw_pw
             password_hash = hash_password(raw_pw)
         else:
-            raw_pw = generate_password()
+            raw_pw = generate_password(config.STATIC_PASSWORD_LENGTH)
             plaintext_pw = raw_pw
             password_hash = hash_password(raw_pw)
 
@@ -158,10 +226,8 @@ def cmd_add(args) -> int:
     except ValueError as e:
         return _err(str(e))
 
-    server_port = config.DEFAULT_SERVER_PORT
-    host = utils.detect_ip()
-
     if is_app:
+        host = utils.detect_ip()
         url = f"http://{host}:{args.port}/"
         print(f"App registered: {url}")
         if auth_creds_shown:
@@ -171,11 +237,13 @@ def cmd_add(args) -> int:
             print("  (public — no auth)")
         print(f"Run 'drop start {args.name or page_id}' to start the app")
     else:
-        if args.name:
-            url = f"http://{host}:{server_port}/p/{page_id}/{args.name}/"
-        else:
-            url = f"http://{host}:{server_port}/p/{page_id}/"
+        base, shareable = _static_base_url(getattr(args, "base_url", None))
+        suffix = f"/p/{page_id}/{args.name}/" if args.name else f"/p/{page_id}/"
+        url = f"{base}{suffix}"
         print(f"Published: {url}")
+        if not shareable:
+            print("  Note: this is the server's local address. Share via your "
+                  "tunnel/tailnet URL, or pass --base-url.", file=sys.stderr)
         if plaintext_pw:
             print(f"Password: {plaintext_pw}")
         elif args.public:
@@ -197,7 +265,7 @@ def cmd_list(args) -> int:
         print("No pages published")
         return 0
     cwd = Path.cwd().resolve()
-    server_port = config.DEFAULT_SERVER_PORT
+    static_base, _shareable = _static_base_url()
     host = utils.detect_ip()
     for pid, page in pages.items():
         if not args.all:
@@ -220,10 +288,7 @@ def cmd_list(args) -> int:
             lock = "" if page.auth else " (public)"
             print(f"{pid[:8]}  [app] {status}{auth_tag}  {url}{lock}")
         else:
-            if rt.tunnel_url:
-                base = rt.tunnel_url
-            else:
-                base = f"http://{host}:{server_port}"
+            base = rt.tunnel_url or static_base
             if page.name:
                 url = f"{base}/p/{pid}/{page.name}/"
             else:
@@ -235,6 +300,27 @@ def cmd_list(args) -> int:
         print(f"  Source: {page.source}")
         if page.type == "app":
             print(f"  Run: {page.run_cmd}")
+    return 0
+
+
+def cmd_index_password(args) -> int:
+    """Set (or clear) the dashboard/index password.
+
+    The server's `/` index lists every published page. It stays disabled until
+    an index password is set here; without one, `/` refuses to enumerate.
+    """
+    base = _drop_base()
+    base.mkdir(parents=True, exist_ok=True)
+    hash_file = base / "index.hash"
+    if args.clear:
+        if hash_file.exists():
+            hash_file.unlink()
+        print("Index password cleared — the dashboard listing is now disabled.")
+        return 0
+    raw_pw = args.password or generate_password(config.STATIC_PASSWORD_LENGTH)
+    hash_file.write_text(hash_password(raw_pw))
+    print(f"Index password set: {raw_pw}")
+    print("The dashboard at / now requires this password.")
     return 0
 
 
@@ -387,7 +473,17 @@ def main() -> None:
                        help="Explicit opt-out from default auth.")
     p_add.add_argument("--rewrite-host", action="store_true",
                        help="Proxy rewrites http://localhost:<port> in text bodies.")
+    p_add.add_argument("--base-url",
+                       help="Override the printed base URL (e.g. your tunnel/tailnet URL).")
     p_add.set_defaults(func=cmd_add)
+
+    p_idx = sub.add_parser("index-password",
+                           help="Set/clear the dashboard (/) password")
+    p_idx.add_argument("password", nargs="?",
+                       help="Password to set (auto-generated if omitted).")
+    p_idx.add_argument("--clear", action="store_true",
+                       help="Remove the index password and disable the listing.")
+    p_idx.set_defaults(func=cmd_index_password)
 
     p_list = sub.add_parser("list", help="List published pages")
     p_list.add_argument("--all", "-a", action="store_true")

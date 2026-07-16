@@ -46,6 +46,29 @@ def _clear_pid() -> None:
         p.unlink()
 
 
+def _drop_base() -> Path:
+    base = Path(os.environ.get("DROP_HOME") or Path.home() / ".drop")
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _write_server_meta(host: str, port: int, tunnel_url: str | None = None) -> None:
+    """Record the server's real bind + tunnel so the CLI can print correct URLs.
+
+    Without this the CLI guesses DEFAULT_SERVER_PORT (8080) and detect_ip(),
+    printing an address that does not resolve.
+    """
+    import json
+    base = _drop_base()
+    (base / "port").write_text(str(port))
+    (base / "host").write_text(host)
+    tunnel_file = base / "tunnel.json"
+    if tunnel_url:
+        tunnel_file.write_text(json.dumps({"url": tunnel_url}))
+    elif tunnel_file.exists():
+        tunnel_file.unlink()
+
+
 def start_server(*, port: int, host: str, no_tunnel: bool) -> StartResult:
     """Start the drop static server. Returns StartResult."""
     # Already running?
@@ -77,6 +100,7 @@ def start_server(*, port: int, host: str, no_tunnel: bool) -> StartResult:
         # Wait for port
         if not utils.wait_for_port("127.0.0.1", port, timeout=10):
             return StartResult(error=f"server did not bind {port} after systemd restart")
+        _write_server_meta(os.environ.get("DROP_HOST", "127.0.0.1"), port)
         return StartResult(url=f"http://{host}:{port}/",
                             warnings=["systemd-managed (auto-restart on failure)"])
 
@@ -99,6 +123,8 @@ def start_server(*, port: int, host: str, no_tunnel: bool) -> StartResult:
         )
     _save_pid(p.pid)
 
+    bind_host = os.environ.get("DROP_HOST", "127.0.0.1")
+
     # Tunnel (NAT detection only for the static server)
     if not no_tunnel and is_behind_nat() and find_cloudflared():
         tunnel_log = (Path(os.environ.get("DROP_HOME") or Path.home() / ".drop")
@@ -106,8 +132,10 @@ def start_server(*, port: int, host: str, no_tunnel: bool) -> StartResult:
         result = tunnel_mod.start_tunnel(port, log_file=tunnel_log)
         if result:
             url, _pid = result
+            _write_server_meta(bind_host, port, tunnel_url=url)
             return StartResult(url=url, warnings=["tunneled via cloudflared"])
 
+    _write_server_meta(bind_host, port)
     return StartResult(url=f"http://{host}:{port}/")
 
 
