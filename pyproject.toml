@@ -1,6 +1,6 @@
 [project]
 name = "agent-instant-drop"
-version = "2.2.0"
+version = "2.3.0"
 description = "Drop any file, app, or prototype to your human"
 readme = "README.md"
 requires-python = ">=3.10"

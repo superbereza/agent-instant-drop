@@ -190,6 +190,30 @@ def list_pages() -> dict[str, Page]:
     return load_pages()
 
 
+def update_page(page: Page) -> Page:
+    """Overwrite an existing page in place (same page_id → same URL). Enforces
+    the same name-uniqueness rule as add_page (ignoring the page's own row)."""
+    pages = load_pages()
+    if page.name:
+        for existing_id, existing in pages.items():
+            if existing_id != page.page_id and existing.name == page.name:
+                raise ValueError(
+                    f"name '{page.name}' already exists (page_id {existing_id[:8]})"
+                )
+    pages[page.page_id] = page
+    save_pages(pages)
+    return page
+
+
+def find_by_source(source: Path, page_type: str) -> tuple[str, Page] | None:
+    """First (page_id, Page) whose source path and type match — used to dedupe
+    re-publishes of the same file so `drop add` stays idempotent."""
+    for pid, p in load_pages().items():
+        if p.type == page_type and p.source == source:
+            return (pid, p)
+    return None
+
+
 # ---- Migration (v1 flat dict -> v2 versioned envelope) ----
 
 _RUNTIME_FIELDS_V1 = {"pid", "proxy_pid", "proxy_port", "tunnel_pid", "tunnel_url"}

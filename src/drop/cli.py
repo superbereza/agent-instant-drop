@@ -92,9 +92,11 @@ def _resolve_public_base(explicit: str | None = None) -> tuple[str, bool, str]:
     tunnel_log = base / "logs" / "static.tunnel.log"
     if tunnel_log.exists():
         try:
-            m = _URL_PATTERN.search(tunnel_log.read_text(errors="replace"))
-            if m:
-                return (m.group(0).rstrip("/"), True, "static.tunnel.log")
+            urls = _URL_PATTERN.findall(tunnel_log.read_text(errors="replace"))
+            if urls:
+                # LAST match — the freshest tunnel. The log accumulates across
+                # restarts, so .search() (first match) returns a long-dead URL.
+                return (urls[-1].rstrip("/"), True, "static.tunnel.log")
         except OSError:
             pass
 
@@ -210,6 +212,24 @@ def cmd_add(args) -> int:
                 f"Directory requires {MANIFEST_FILE} manifest",
                 hint=f"Create {source / MANIFEST_FILE} with allowed file patterns.",
             )
+
+    # Dedupe re-publishes of the same STATIC source: return the existing page
+    # instead of spawning a new id/password each time (the server serves the file
+    # live, so the same path is always the same link). --new forces a fresh one.
+    # Apps are NOT deduped — same file with a different --run/--port is a distinct
+    # registration; accidental collisions are caught by the name-uniqueness guard.
+    if not is_app and not getattr(args, "new", False):
+        existing = storage.find_by_source(source, "static")
+        if existing:
+            pid, pg = existing
+            base, _sh = _static_base_url(getattr(args, "base_url", None))
+            suffix = f"/p/{pid}/{pg.name}/" if pg.name else f"/p/{pid}/"
+            print(f"Already published (same source): {base}{suffix}")
+            lock = "" if pg.password_hash else "  (public)"
+            print(f"  Same path → same link, content served live.{lock}")
+            print(f"  Rotate the password: 'drop update {pid[:8]} --password'. "
+                  f"Fresh page: 'drop add --new'.")
+            return 0
 
     page_id = utils.generate_page_id()
 
@@ -474,8 +494,8 @@ def cmd_status(args) -> int:
             pass
     if not tunnel_url and tunnel_log.exists():
         try:
-            m = _URL_PATTERN.search(tunnel_log.read_text(errors="replace"))
-            tunnel_url = m.group(0) if m else None
+            urls = _URL_PATTERN.findall(tunnel_log.read_text(errors="replace"))
+            tunnel_url = urls[-1] if urls else None  # freshest, not first
         except OSError:
             pass
     if tunnel_url:
@@ -586,6 +606,156 @@ def cmd_stop(args) -> int:
     return 0
 
 
+def cmd_update(args) -> int:
+    page = storage.get_page(args.id)
+    if page is None:
+        return _err(f"page '{args.id}' not found")
+    changed, new_pw = [], None
+    if args.desc is not None:
+        page.description = args.desc
+        changed.append("desc")
+    if args.name is not None:
+        page.name = args.name
+        changed.append("name")
+    if args.password is not None:
+        if page.type != "static":
+            return _err("--password updates static-page passwords "
+                        "(apps set auth via --auth at add time)")
+        raw = (args.password if args.password is not True
+               else generate_password(config.STATIC_PASSWORD_LENGTH))
+        page.password_hash = hash_password(raw)
+        new_pw = raw
+        changed.append("password")
+    if not changed:
+        return _err("nothing to update", hint="pass --desc, --name, and/or --password")
+    try:
+        storage.update_page(page)
+    except ValueError as e:
+        return _err(str(e))
+    if page.type == "static":
+        base, _sh = _static_base_url()
+        suffix = f"/p/{page.page_id}/{page.name}/" if page.name else f"/p/{page.page_id}/"
+        print(f"Updated ({', '.join(changed)}): {base}{suffix}")
+    else:
+        print(f"Updated ({', '.join(changed)}): {page.page_id[:8]}")
+    if new_pw:
+        print(f"Password: {new_pw}")
+    return 0
+
+
+def _tunnel_recorded(base: Path) -> tuple[str | None, int | None]:
+    """(url, pid) of the recorded static tunnel — tunnel.json first, else the
+    freshest URL in the log (pid unknown)."""
+    tj = base / "tunnel.json"
+    if tj.exists():
+        try:
+            d = json.loads(tj.read_text())
+            return (d.get("url") or None, d.get("pid"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    log_file = base / "logs" / "static.tunnel.log"
+    if log_file.exists():
+        try:
+            urls = _URL_PATTERN.findall(log_file.read_text(errors="replace"))
+            return (urls[-1] if urls else None, None)
+        except OSError:
+            pass
+    return (None, None)
+
+
+def cmd_tunnel(args) -> int:
+    """Self-heal the static server's cloudflare tunnel: restart it, or ensure it's
+    alive (probe → restart only if dead). Fixes the 'zombie' (process up, quick-
+    tunnel reaped by cloudflare → dead URL)."""
+    from .lifecycle.tunnel import start_tunnel, stop_tunnel
+    base = _drop_base()
+    port = _server_port() or str(config.DEFAULT_SERVER_PORT)
+    log_file = base / "logs" / "static.tunnel.log"
+    tunnel_json = base / "tunnel.json"
+
+    if args.action == "ensure":
+        url, _pid = _tunnel_recorded(base)
+        if url:
+            alive, detail = _probe_url(url)
+            if alive:
+                print(f"Tunnel healthy: {url}  [{detail}]")
+                return 0
+        print("Tunnel dead/absent — restarting…")
+
+    # (restart, or ensure that fell through) — kill the recorded tunnel, rotate
+    # the log so only the fresh URL remains, then spawn a new quick tunnel.
+    _url, pid = _tunnel_recorded(base)
+    if pid:
+        stop_tunnel(int(pid))
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_file.write_text("")
+    except OSError:
+        pass
+    result = start_tunnel(int(port), log_file)
+    if result is None:
+        return _err("could not start cloudflared tunnel",
+                    hint="is cloudflared installed? run drop-install-env")
+    url, pid = result
+    try:
+        tunnel_json.write_text(json.dumps({"url": url, "pid": pid}))
+    except OSError:
+        pass
+    print(f"Tunnel up: {url}")
+    print("  (cloudflare quick-tunnels get a NEW random URL each restart — for a "
+          "stable address prefer tailnet / set ~/.drop/base_url)")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    import shutil
+    import subprocess
+    ok = True
+
+    # 1. Multiple `drop` on PATH — the "old version silently wins" trap (short
+    #    passwords, missing features). PATH order decides; first wins.
+    found, seen = [], set()
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        cand = Path(d) / "drop"
+        if cand.exists() and str(cand) not in seen:
+            seen.add(str(cand))
+            found.append(str(cand))
+    if len(found) > 1:
+        ok = False
+        print(f"⚠ {len(found)} 'drop' on PATH — the FIRST wins, may be stale:")
+        for f in found:
+            print(f"    {f}")
+        print("    → put the newest plugin bin first, or remove old cache dirs.")
+    else:
+        print(f"✓ drop on PATH: {found[0] if found else '(none found)'}")
+
+    # 2. cloudflared
+    cf = bool(shutil.which("cloudflared")) or (Path.home() / ".drop/bin/cloudflared").exists()
+    print(f"{'✓' if cf else '⚠'} cloudflared: "
+          f"{'present' if cf else 'missing — run drop-install-env for tunnels'}")
+
+    # 3. systemd static server (Linux)
+    try:
+        st = subprocess.run(["systemctl", "--user", "is-active", "drop"],
+                            capture_output=True, text=True, timeout=4).stdout.strip()
+        if st:
+            print(f"{'✓' if st == 'active' else '⚠'} drop.service: {st}")
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        pass
+
+    # 4. Public URL + tunnel health
+    pub, shareable, src = _resolve_public_base()
+    print(f"{'✓' if shareable else '⚠'} public URL: {pub}  [{src}]")
+    url, _pid = _tunnel_recorded(_drop_base())
+    if url:
+        alive, detail = _probe_url(url)
+        print(f"{'✓' if alive else '⚠'} tunnel: {url}  "
+              f"[{detail if alive else 'DEAD — drop tunnel restart'}]")
+        ok = ok and alive
+
+    return 0 if ok else 1
+
+
 # ---- main ----
 
 def main() -> None:
@@ -637,7 +807,29 @@ def main() -> None:
                             "interface (auth then protects the tunnel only).")
     p_add.add_argument("--base-url",
                        help="Override the printed base URL (e.g. your tunnel/tailnet URL).")
+    p_add.add_argument("--new", action="store_true",
+                       help="Force a fresh page even if this source is already "
+                            "published (default: reuse the existing link).")
     p_add.set_defaults(func=cmd_add)
+
+    p_update = sub.add_parser("update",
+                              help="Update an existing page in place (same URL)")
+    p_update.add_argument("id")
+    p_update.add_argument("--name", "-n")
+    p_update.add_argument("--desc", "-d")
+    p_update.add_argument("--password", "-p", nargs="?", const=True, default=None,
+                          help="Rotate the static-page password (auto-gen if no value).")
+    p_update.set_defaults(func=cmd_update)
+
+    p_tunnel = sub.add_parser("tunnel",
+                              help="Restart/ensure the static server's cloudflare tunnel")
+    p_tunnel.add_argument("action", nargs="?", choices=["restart", "ensure"],
+                          default="ensure",
+                          help="'ensure' restarts only if dead (default); 'restart' always.")
+    p_tunnel.set_defaults(func=cmd_tunnel)
+
+    p_doctor = sub.add_parser("doctor", help="Diagnose PATH/version, cloudflared, URL, tunnel health")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     p_idx = sub.add_parser("index-password",
                            help="Set/clear the dashboard (/) password")

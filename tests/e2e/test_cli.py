@@ -119,6 +119,46 @@ def test_add_duplicate_name_refused(drop_home, tmp_path):
 
 
 @pytest.mark.e2e
+def test_add_same_source_dedupes(drop_home, tmp_path):
+    f = tmp_path / "report.html"
+    f.write_text("<h1>x</h1>")
+    p1 = _drop("add", str(f), drop_home=drop_home)
+    assert "Published:" in p1.stdout
+    p2 = _drop("add", str(f), drop_home=drop_home)
+    assert "Already published (same source)" in p2.stdout
+    # exactly one page registered, not two
+    st = _drop("status", drop_home=drop_home)
+    assert "Pages:    1 registered" in st.stdout
+
+
+@pytest.mark.e2e
+def test_add_new_forces_fresh(drop_home, tmp_path):
+    f = tmp_path / "report.html"
+    f.write_text("<h1>x</h1>")
+    _drop("add", str(f), drop_home=drop_home)
+    p2 = _drop("add", str(f), "--new", drop_home=drop_home)
+    assert "Published:" in p2.stdout
+    st = _drop("status", drop_home=drop_home)
+    assert "Pages:    2 registered" in st.stdout
+
+
+@pytest.mark.e2e
+def test_update_rotates_password(drop_home, tmp_path):
+    f = tmp_path / "report.html"
+    f.write_text("<h1>x</h1>")
+    p1 = _drop("add", str(f), drop_home=drop_home)
+    pid = [ln for ln in p1.stdout.splitlines() if "Published:" in ln][0].split("/p/")[1].split("/")[0]
+    p2 = _drop("update", pid, "--password", drop_home=drop_home)
+    assert "Updated" in p2.stdout and "Password:" in p2.stdout
+
+
+@pytest.mark.e2e
+def test_doctor_runs(drop_home):
+    p = _drop("doctor", drop_home=drop_home, expect_ok=False)  # rc may be 1 on multi-version PATH
+    assert "drop on PATH" in p.stdout or "'drop' on PATH" in p.stdout
+
+
+@pytest.mark.e2e
 def test_add_auth_without_run_refused(drop_home, tmp_path):
     f = tmp_path / "x.html"; f.write_text("x")
     p = _drop("add", str(f), "--auth", "basic",

@@ -78,8 +78,39 @@ Environment=PYTHONUNBUFFERED=1
 [Install]
 WantedBy=default.target
 EOF
+    # Self-heal for the cloudflare tunnel: a timer runs `drop tunnel ensure`,
+    # which probes the recorded URL and restarts cloudflared ONLY if it's dead
+    # (fixes the 'zombie': process up but quick-tunnel reaped → dead URL). It
+    # leaves a healthy tunnel untouched, so the URL is stable while it lives.
+    cat > "$UNIT_DIR/drop-tunnel-heal.service" <<'EOF'
+[Unit]
+Description=Agent Instant Drop — cloudflare tunnel self-heal
+After=drop.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.drop/systemd.env
+ExecStart=%h/.drop/venv/bin/drop tunnel ensure
+EOF
+    cat > "$UNIT_DIR/drop-tunnel-heal.timer" <<'EOF'
+[Unit]
+Description=Agent Instant Drop — tunnel health check every 5 min
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
     systemctl --user daemon-reload
+    systemctl --user enable --now drop-tunnel-heal.timer >/dev/null 2>&1 || true
     echo "  ✓ systemd unit drop.service (ExecStart → %h/.drop/venv — stable across plugin updates)"
+    echo "  ✓ systemd timer drop-tunnel-heal.timer (self-heals the cloudflare tunnel every 5 min)"
 fi
+
+# 4. Pre-warm the launcher venv so the first real `drop` call isn't a surprise
+#    'setting up venv…' mid-task. Best-effort; ignore if `drop` isn't on PATH yet.
+command -v drop >/dev/null 2>&1 && drop --version >/dev/null 2>&1 || true
 
 echo "drop-install-env: done. Tunnel runtime ready."
