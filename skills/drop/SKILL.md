@@ -60,7 +60,7 @@ drop stop api
 | `drop start <name>` | Start a registered app |
 | `drop start <name> --auth-insecure` | Allow cleartext basic auth (skip tunnel requirement) |
 | `drop stop` / `drop stop <name>` | Stop server / app |
-| `drop status` | Show registered pages count |
+| `drop status` | Health/URL overview: server state, the **resolved public URL** to share (+ its source), tailnet URL, cloudflare tunnel + **liveness probe**, page count |
 | `drop add <path>` | Publish (password-protected by default) |
 | `drop add <path> --public` | Publish without password |
 | `drop add <path> --run "cmd" --port N` | Register an app |
@@ -69,6 +69,13 @@ drop stop api
 | `drop remove <id|name>` | Remove a registered page |
 | `drop cleanup` | Remove entries whose source file no longer exists |
 | `drop index-password [PASS]` | Set/clear the dashboard (`/`) password (`--clear` disables it) |
+
+> **Before you hand a link to your human:** the URL `drop add` prints is the *resolved
+> public base*. If it's a `127.0.0.1` loopback (drop couldn't determine a shareable
+> address), run **`drop status`** to get the real tailnet/tunnel URL and to confirm the
+> cloudflare tunnel is alive (a quick-tunnel can be a zombie: process up, URL dead). For
+> a stable deployment, set the authoritative URL once via **`DROP_PUBLIC_URL`** or
+> `~/.drop/base_url` (e.g. your `tailscale serve` HTTPS URL) — `drop add` then prints that.
 
 ## Flags for `drop add`
 

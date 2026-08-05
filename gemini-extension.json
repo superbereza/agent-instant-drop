@@ -1,6 +1,6 @@
 {
   "name": "drop",
   "description": "Securely share any file, folder, or running app with a password-protected HTTPS link — built for AI agents.",
-  "version": "2.1.2",
+  "version": "2.2.0",
   "contextFileName": "AGENTS.md"
 }

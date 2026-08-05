@@ -19,6 +19,11 @@ SERVER_PID_FILE = DROP_HOME / "server.pid"
 SERVER_PORT_FILE = DROP_HOME / "port"
 SERVER_HOST_FILE = DROP_HOME / "host"
 SERVER_TUNNEL_FILE = DROP_HOME / "tunnel.json"
+# Authoritative public base URL for the static server, written by the deployment
+# (drop-install-env / tailnet-publish) or set by hand. Read before any guessing,
+# so the printed link is the real one (tailnet/cloudflare) — not a wrong IP:port
+# guess. Overridable per-invocation via the DROP_PUBLIC_URL env var.
+PUBLIC_URL_FILE = DROP_HOME / "base_url"
 
 CLOUDFLARED_BIN_OVERRIDE = os.environ.get("DROP_CLOUDFLARED_BIN")
 

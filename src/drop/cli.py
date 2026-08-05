@@ -21,38 +21,80 @@ def _drop_base() -> Path:
     return Path(os.environ.get("DROP_HOME") or Path.home() / ".drop")
 
 
-def _static_base_url(explicit: str | None = None) -> tuple[str, bool]:
+def _server_port() -> str | None:
+    """The static server's real local port (systemd.env DROP_PORT, or the port file)."""
+    base = _drop_base()
+    env_file = base / "systemd.env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text().splitlines():
+                if line.startswith("DROP_PORT="):
+                    p = line.split("=", 1)[1].strip()
+                    if p:
+                        return p
+        except OSError:
+            pass
+    port_f = base / "port"
+    if port_f.exists():
+        try:
+            p = port_f.read_text().strip()
+            if p:
+                return p
+        except OSError:
+            pass
+    return None
+
+
+def _resolve_public_base(explicit: str | None = None) -> tuple[str, bool, str]:
     """Resolve the static server's public base URL.
 
-    Returns (base_url, shareable). `shareable` is False when we could only
-    determine a loopback address (server is reachable but not from outside —
-    the caller should tell the user to use their tunnel/tailnet).
+    Returns (base_url, shareable, source). `shareable` is False only for a
+    loopback address (reachable, but not from outside — caller should point the
+    user at their tunnel/tailnet).
 
-    Priority: explicit override → tunnel.json (from `drop start`) →
-    host/port files → systemd.env DROP_PORT + static.tunnel.log →
-    detect_ip()+DEFAULT_SERVER_PORT (last-resort guess).
+    Priority (authoritative first, guesses last):
+      explicit → $DROP_PUBLIC_URL → ~/.drop/base_url → tunnel.json (drop start)
+      → static.tunnel.log → host/port files → loopback on the REAL port.
+
+    We never guess a public `IP:8080` anymore — on a systemd deployment that
+    address is whatever else owns :8080 (e.g. a legacy web server), so handing
+    it out gives a dead/foreign link. When nothing authoritative is known we
+    fall back to loopback and flag it not-shareable.
     """
     if explicit:
-        return (explicit.rstrip("/"), True)
+        return (explicit.rstrip("/"), True, "--base-url")
     base = _drop_base()
+
+    env_url = os.environ.get("DROP_PUBLIC_URL", "").strip()
+    if env_url:
+        return (env_url.rstrip("/"), True, "$DROP_PUBLIC_URL")
+
+    if config.PUBLIC_URL_FILE.exists():
+        try:
+            url = config.PUBLIC_URL_FILE.read_text().strip()
+            if url:
+                return (url.rstrip("/"), True, "base_url file")
+        except OSError:
+            pass
 
     tunnel_json = base / "tunnel.json"
     if tunnel_json.exists():
         try:
             url = json.loads(tunnel_json.read_text()).get("url", "").strip()
             if url:
-                return (url.rstrip("/"), True)
+                return (url.rstrip("/"), True, "tunnel.json")
         except (OSError, json.JSONDecodeError):
             pass
 
     # systemd deployment (drop-install-env) never runs `drop start`, so the
-    # real port lives in systemd.env and the tunnel URL in the tunnel log.
+    # tunnel URL lives in the tunnel log. NOTE: this log can be stale (a quick
+    # tunnel that cloudflare has since reaped) — `drop status` health-probes it.
     tunnel_log = base / "logs" / "static.tunnel.log"
     if tunnel_log.exists():
         try:
             m = _URL_PATTERN.search(tunnel_log.read_text(errors="replace"))
             if m:
-                return (m.group(0).rstrip("/"), True)
+                return (m.group(0).rstrip("/"), True, "static.tunnel.log")
         except OSError:
             pass
 
@@ -63,22 +105,19 @@ def _static_base_url(explicit: str | None = None) -> tuple[str, bool]:
             port = port_f.read_text().strip()
             if host and port:
                 shareable = host not in ("127.0.0.1", "localhost")
-                return (f"http://{host}:{port}", shareable)
+                return (f"http://{host}:{port}", shareable, "host/port files")
         except OSError:
             pass
 
-    env_file = base / "systemd.env"
-    if env_file.exists():
-        try:
-            for line in env_file.read_text().splitlines():
-                if line.startswith("DROP_PORT="):
-                    port = line.split("=", 1)[1].strip()
-                    if port:
-                        return (f"http://127.0.0.1:{port}", False)
-        except OSError:
-            pass
+    port = _server_port() or str(config.DEFAULT_SERVER_PORT)
+    return (f"http://127.0.0.1:{port}", False, "loopback (no public URL set)")
 
-    return (f"http://{utils.detect_ip()}:{config.DEFAULT_SERVER_PORT}", False)
+
+def _static_base_url(explicit: str | None = None) -> tuple[str, bool]:
+    """(base_url, shareable) — thin wrapper over _resolve_public_base for callers
+    that don't need the resolution source."""
+    url, shareable, _src = _resolve_public_base(explicit)
+    return (url, shareable)
 
 
 __doc__ = """\
@@ -347,9 +386,106 @@ def cmd_index_password(args) -> int:
     return 0
 
 
+def _probe_url(url: str, timeout: float = 3.0) -> tuple[bool, str]:
+    """Best-effort liveness probe. Returns (alive, detail). A cloudflare quick
+    tunnel whose process is alive but whose tunnel cloudflare has reaped answers
+    with a connection error / 5xx — that's how we surface a 'zombie' tunnel."""
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return (True, f"HTTP {r.status}")
+    except urllib.error.HTTPError as e:
+        # Reached the origin (even a 401/404 means the tunnel is live).
+        return (True, f"HTTP {e.code}")
+    except Exception as e:  # URLError, timeout, connection reset, DNS…
+        return (False, f"unreachable ({type(e).__name__})")
+
+
+def _tailnet_url(port: str | None) -> str | None:
+    """Best-effort tailnet URL from `tailscale serve status`. Returns the mapping
+    whose backend is our port, else the first served URL. None if tailscale/serve
+    isn't set up.
+
+    `tailscale serve status` puts the URL and its proxy target on ADJACENT lines:
+        https://host.ts.net:9443 (tailnet only)
+        |-- / proxy http://127.0.0.1:8090
+    so we pair each header URL with the 127.0.0.1:<port> on the lines beneath it.
+    """
+    import re as _re
+    import subprocess
+    try:
+        out = subprocess.run(["tailscale", "serve", "status"],
+                             capture_output=True, text=True, timeout=4).stdout
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return None
+    header = _re.compile(r"^(https://[^\s|]+\.ts\.net(?::\d+)?)\b")
+    first = None
+    current = None
+    for line in out.splitlines():
+        h = header.match(line.strip())
+        if h:
+            current = h.group(1).rstrip("/")
+            if first is None:
+                first = current
+            continue
+        if port and current and _re.search(rf"127\.0\.0\.1:{port}\b", line):
+            return current
+    return first
+
+
 def cmd_status(args) -> int:
+    base = _drop_base()
     pages = storage.list_pages()
-    print(f"Pages registered: {len(pages)}")
+    port = _server_port()
+
+    # Static server liveness
+    srv_pid_f = base / "server.pid"
+    srv_state = "not running"
+    if srv_pid_f.exists():
+        try:
+            pid = int(srv_pid_f.read_text().strip())
+            os.kill(pid, 0)
+            srv_state = f"running (pid {pid})"
+        except (OSError, ValueError):
+            srv_state = "stale pid (not running)"
+    elif port:
+        srv_state = "systemd (see: systemctl --user status drop)"
+    print(f"Server:   127.0.0.1:{port or config.DEFAULT_SERVER_PORT}  [{srv_state}]")
+
+    # Resolved public base URL (what `drop add` will actually print)
+    pub, shareable, src = _resolve_public_base()
+    tag = "" if shareable else "  ⚠ loopback — not shareable"
+    print(f"Public:   {pub}  [source: {src}]{tag}")
+
+    # Tailnet (stable path)
+    tnet = _tailnet_url(port)
+    if tnet:
+        print(f"Tailnet:  {tnet}")
+
+    # Cloudflare tunnel + health (reveals the '20-day zombie': process up, tunnel dead)
+    tunnel_log = base / "logs" / "static.tunnel.log"
+    tunnel_url = None
+    if (base / "tunnel.json").exists():
+        try:
+            tunnel_url = json.loads((base / "tunnel.json").read_text()).get("url", "").strip() or None
+        except (OSError, json.JSONDecodeError):
+            pass
+    if not tunnel_url and tunnel_log.exists():
+        try:
+            m = _URL_PATTERN.search(tunnel_log.read_text(errors="replace"))
+            tunnel_url = m.group(0) if m else None
+        except OSError:
+            pass
+    if tunnel_url:
+        alive, detail = _probe_url(tunnel_url)
+        verdict = detail if alive else f"DEAD ({detail}) — restart the tunnel"
+        print(f"Tunnel:   {tunnel_url}  [{verdict}]")
+    else:
+        print("Tunnel:   none (cloudflare quick-tunnel not recorded)")
+
+    print(f"Pages:    {len(pages)} registered")
     return 0
 
 
