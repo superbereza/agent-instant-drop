@@ -29,7 +29,9 @@ mkdir -p "$DROP_HOME/bin"
 echo "drop-install-env: daemon venv at $VENV ..."
 command -v python3 >/dev/null 2>&1 || { echo "  python3 not found — install Python 3.10+" >&2; exit 1; }
 if command -v uv >/dev/null 2>&1; then
-    uv venv "$VENV" >/dev/null
+    # Only create the venv if missing — `uv venv` errors on an existing one, which
+    # broke idempotent re-runs (upgrades). Reinstalling the package is always safe.
+    [ -x "$VENV/bin/python" ] || uv venv "$VENV" >/dev/null
     uv pip install --quiet --python "$VENV/bin/python" "$ROOT"
 else
     [ -x "$VENV/bin/python" ] || python3 -m venv "$VENV"
