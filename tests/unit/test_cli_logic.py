@@ -59,3 +59,22 @@ def test_cmd_list_shows_degraded(drop_home, capsys, monkeypatch):
     cli.cmd_list(SimpleNamespace(all=True))
     out = capsys.readouterr().out
     assert "degraded" in out.lower() and "proxy" in out.lower()
+
+
+# ── _probe_url: Cloudflare edge 5xx (530 zombie) must read as DEAD, origin 4xx as ALIVE ──
+def test_probe_url_cf_edge_codes(monkeypatch):
+    import urllib.request
+    import urllib.error
+    from drop.cli import _probe_url
+
+    def _raiser(code):
+        def _open(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, code, "x", {}, None)
+        return _open
+
+    for code, expected_alive in [(530, False), (502, False), (521, False),
+                                 (401, True), (404, True), (200, True)]:
+        monkeypatch.setattr(urllib.request, "urlopen", _raiser(code))
+        alive, detail = _probe_url("https://x.trycloudflare.com")
+        assert alive is expected_alive, f"HTTP {code} → alive={alive}, want {expected_alive}"
+        assert str(code) in detail

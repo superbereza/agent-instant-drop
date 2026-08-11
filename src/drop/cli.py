@@ -417,8 +417,13 @@ def _probe_url(url: str, timeout: float = 3.0) -> tuple[bool, str]:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return (True, f"HTTP {r.status}")
     except urllib.error.HTTPError as e:
-        # Reached the origin (even a 401/404 means the tunnel is live).
-        return (True, f"HTTP {e.code}")
+        # A Cloudflare *edge* error means the tunnel/origin is down — NOT that we reached the
+        # app. 530 (cloudflared disconnected — the classic zombie), 502/504, and 520–527 are all
+        # Cloudflare-generated; treat them as DEAD so the heal actually restarts. Any other status
+        # (401/403/404, 2xx, 3xx) means the origin answered → the tunnel is live. (Previously this
+        # returned alive for EVERY code, so a 530 zombie was reported "healthy" and never healed.)
+        cf_edge_down = e.code in (502, 504, 530) or 520 <= e.code <= 527
+        return (not cf_edge_down, f"HTTP {e.code}")
     except Exception as e:  # URLError, timeout, connection reset, DNS…
         return (False, f"unreachable ({type(e).__name__})")
 

@@ -91,6 +91,13 @@ After=drop.service
 
 [Service]
 Type=oneshot
+# KillMode=process is LOAD-BEARING: `drop tunnel ensure` spawns cloudflared detached
+# (setsid), but setsid does NOT escape this service's systemd cgroup. With the default
+# KillMode=control-group, when this oneshot finishes systemd SIGTERMs the whole cgroup —
+# killing the cloudflared it just launched (it dies in the same second it got its URL, so
+# the tunnel is permanently 530). KillMode=process kills only the (already-exited) main
+# process, leaving the detached cloudflared alive.
+KillMode=process
 EnvironmentFile=-%h/.drop/systemd.env
 ExecStart=%h/.drop/venv/bin/drop tunnel ensure
 EOF
